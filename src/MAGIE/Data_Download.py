@@ -132,9 +132,10 @@ def Download_MAGIE(start, end, sites=['arm', 'dun', 'val'], save_file_name=False
                 with open(filename, mode='w') as F:
                     F.write(new_f)
                 
-                if os.path.isfile('badfiles.txt'):
+                if os.path.isfile('bad_files.txt'):
                     with open('bad_files.txt', 'r') as f:
                         bad_files = f.read()
+                        f.close()
                 else:
                     bad_files = ''
                 
@@ -142,7 +143,7 @@ def Download_MAGIE(start, end, sites=['arm', 'dun', 'val'], save_file_name=False
                 
                 with open('bad_files.txt', 'w') as f:
                     f.write(bad_files)
-                
+                    f.close()
                 file = pd.read_csv(filename, delimiter='\t', 
                                    names=columns, 
                                    skiprows=1, parse_dates=['Date_UTC'], dayfirst=True, index_col=False).replace(99.99999e3, np.nan)
@@ -154,6 +155,7 @@ def Download_MAGIE(start, end, sites=['arm', 'dun', 'val'], save_file_name=False
                 if os.path.isfile('bad_files.txt'):
                     with open('bad_files.txt', 'r') as f:
                         bad_files = f.read()
+                        f.close()
                 else:
                     bad_files = ''
                 
@@ -161,7 +163,7 @@ def Download_MAGIE(start, end, sites=['arm', 'dun', 'val'], save_file_name=False
                 
                 with open('bad_files.txt', 'w') as f:
                     f.write(bad_files)
-                
+                    f.close()
                 file = file.loc[0:len(file)-2]
                 
                 if file['Date_UTC'].dtype == 'O':
@@ -172,8 +174,8 @@ def Download_MAGIE(start, end, sites=['arm', 'dun', 'val'], save_file_name=False
                         file[column] = file[column].astype('float64')
             
             # Save the data to an HDF5 file using specified columns (the index column is removed as it is meaningless in a merged file)
-            file[drop_index].to_hdf(save_file_name, key='main', mode='a', append=True, format='t', data_columns=True)
+            # file[drop_index].to_hdf(save_file_name, key='main', mode='a', append=True, format='t', data_columns=True)
             
             # Remove the downloaded file to save space
             os.remove(filename)
-            return save_file_name
+    return save_file_name
