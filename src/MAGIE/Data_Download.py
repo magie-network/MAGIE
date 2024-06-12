@@ -39,7 +39,7 @@ def Download_MAGIE(start, end, sites=['arm', 'dun', 'val'], save_file_name=False
     save_file_name (str or bool, optional): Filename to save the downloaded data. If False, a default name will be generated. Defaults to False.
 
     Raises:
-    ValueError: If the start or end date is out of range of the available data.
+    ValueError: If no functioning url is found for years from 2000 to now and thus earliest and latest year for data coverage cannot be found
     FileExistsError: If the specified save file already exists and the user chooses not to append to it.
     
     Returns:
