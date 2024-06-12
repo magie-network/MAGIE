@@ -1,12 +1,31 @@
+#Imports
 import numpy as np
 import requests
 from datetime import datetime as dt
 import os
 import pandas as pd
-from File_tools.Filename_tools import date2filename
-from General_Tools.user_input_tools import validinput
+#Handling import errors for GitHub repositories
+try:
+    from File_tools.Filename_tools import date2filename
+except ImportError:
+    raise ImportError('Unable to import date2filename from File_tools.Filename_tools. \
+                      This repository is avaiable from https://github.com/08walkersj/File_tools . \
+                      If you already have this repository ensure that File_tools/src/ is added \
+                      to your python path')
+try:
+    from General_Tools.user_input_tools import validinput
+except ImportError:
+    raise ImportError('Unable to import validinput from General_Tools.user_input_tools. \
+                      This repository is avaiable from https://github.com/08walkersj/General_Tools . \
+                      If you already have this repository ensure that General_Tools/src/ is added \
+                      to your python path')
 import warnings
-from progressbar import progressbar
+#Creates non functioning progessbar if the import of the progressbar package is not possible
+try:
+    from progressbar import progressbar
+except ImportError:
+    def progressbar(*args, **kwargs):
+        return args[0]
 from pandas.errors import ParserError
 
 def Download_MAGIE(start, end, sites=['arm', 'dun', 'val'], save_file_name=False):
