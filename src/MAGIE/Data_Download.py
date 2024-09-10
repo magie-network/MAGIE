@@ -174,7 +174,7 @@ def Download_MAGIE(start, end, sites=['arm', 'dun', 'val'], save_file_name=False
                         file[column] = file[column].astype('float64')
             
             # Save the data to an HDF5 file using specified columns (the index column is removed as it is meaningless in a merged file)
-            # file[drop_index].to_hdf(save_file_name, key='main', mode='a', append=True, format='t', data_columns=True)
+            file[drop_index].to_hdf(save_file_name, key='main', mode='a', append=True, format='t', data_columns=True)
             
             # Remove the downloaded file to save space
             os.remove(filename)
