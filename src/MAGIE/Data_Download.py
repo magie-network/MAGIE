@@ -27,7 +27,37 @@ except ImportError:
     def progressbar(*args, **kwargs):
         return args[0]
 from pandas.errors import ParserError
+from platform import system
+if 'Linux' in system():
+    def download(url, filename):
+        return os.system(f'wget {url}')
+else:
+    from urllib.request import urlretrieve
+    import sys
+    def download_progress_hook(count, block_size, total_size):
+        """
+        Report hook to display a progress bar for downloading.
+        
+        :param count: Current block number being downloaded.
+        :param block_size: Size of each block (in bytes).
+        :param total_size: Total size of the file (in bytes).
+        """
+        # Calculate percentage of the download
+        downloaded_size = count * block_size
+        percentage = min(100, downloaded_size * 100 / total_size)
+        
+        # Create a simple progress bar
+        progress_bar = f"\rDownloading: {percentage:.2f}% [{downloaded_size}/{total_size} bytes]"
+        
+        # Update the progress on the same line
+        sys.stdout.write(progress_bar)
+        sys.stdout.flush()
 
+        # When download is complete
+        if downloaded_size >= total_size:
+            print("\nDownload complete!")
+    def download(url, file_name):
+        return urlretrieve(url, file_name, reporthook=download_progress_hook)
 def Download_MAGIE(start, end, sites=['arm', 'dun', 'val'], save_file_name=False):
     """
     Downloads MAGIE data for specified sites and date range, and saves it to a file.
@@ -115,7 +145,7 @@ def Download_MAGIE(start, end, sites=['arm', 'dun', 'val'], save_file_name=False
                 continue
             
             # Download the file using wget
-            os.system(f'wget {url}{filename}')
+            download(f'{url}{filename}', filename)
             
             # File bug handling for empty tabs appearing on some lines
             try:
