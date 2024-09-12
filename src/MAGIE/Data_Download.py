@@ -28,9 +28,11 @@ except ImportError:
         return args[0]
 from pandas.errors import ParserError
 from platform import system
+# If Linux download uses wget
 if 'Linux' in system():
     def download(url, filename):
         return os.system(f'wget {url}')
+# If not Linux use urllib.request.urlretrieve
 else:
     from urllib.request import urlretrieve
     import sys
