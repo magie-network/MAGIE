@@ -1,4 +1,5 @@
-Code useful for Irish magnetometers. Such as downloading from the website.
+# MAGIE
+## Code useful for Irish magnetometers. Such as downloading from the website.
 
 # File Problems
 - Cases of repeated time stamps with different measurement values for dunsink and armagh.
