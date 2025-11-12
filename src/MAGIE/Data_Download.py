@@ -5,20 +5,16 @@ from datetime import datetime as dt
 import os
 import pandas as pd
 #Handling import errors for GitHub repositories
-try:
-    from File_tools.Filename_tools import date2filename
-except ImportError:
-    raise ImportError('Unable to import date2filename from File_tools.Filename_tools. \
-                      This repository is avaiable from https://github.com/08walkersj/File_tools . \
-                      If you already have this repository ensure that File_tools/src/ is added \
-                      to your python path')
-try:
-    from General_Tools.user_input_tools import validinput
-except ImportError:
-    raise ImportError('Unable to import validinput from General_Tools.user_input_tools. \
-                      This repository is avaiable from https://github.com/08walkersj/General_Tools . \
-                      If you already have this repository ensure that General_Tools/src/ is added \
-                      to your python path')
+def validinput(inputstr, positive_answer, negative_answer):
+    answer= input(inputstr+'\n')
+    if answer==positive_answer:
+        return True
+    elif answer== negative_answer:
+        return False
+    else:
+        print('Invalid response should be either '+ str(positive_answer)+ ' or ' +str(negative_answer))
+        return validinput(inputstr, positive_answer, negative_answer)
+from File_tools.Filename_tools import date2filename
 import warnings
 #Creates non functioning progessbar if the import of the progressbar package is not possible
 try:
@@ -60,7 +56,7 @@ else:
             print("\nDownload complete!")
     def download(url, file_name):
         return urlretrieve(url, file_name, reporthook=download_progress_hook)
-def Download_MAGIE(start, end, sites=['arm', 'dun', 'val'], save_file_name=False):
+def Download_MAGIE(start, end, sites=['arm', 'dun', 'val', 'bir'], save_file_name=False):
     """
     Downloads MAGIE data for specified sites and date range, and saves it to a file.
 
@@ -211,3 +207,6 @@ def Download_MAGIE(start, end, sites=['arm', 'dun', 'val'], save_file_name=False
             # Remove the downloaded file to save space
             os.remove(filename)
     return save_file_name
+
+if __name__=='__main__':
+    Download_MAGIE(np.datetime64('2022-01-01T00:00'), np.datetime64('2025-01-01T00:00'))
