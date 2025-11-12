@@ -15,7 +15,7 @@ def validinput(inputstr, positive_answer, negative_answer):
     else:
         print('Invalid response should be either '+ str(positive_answer)+ ' or ' +str(negative_answer))
         return validinput(inputstr, positive_answer, negative_answer)
-from File_tools.Filename_tools import date2filename
+from MAGIE.Filename_tools import date2filename
 import warnings
 #Creates non functioning progessbar if the import of the progressbar package is not possible
 try:
