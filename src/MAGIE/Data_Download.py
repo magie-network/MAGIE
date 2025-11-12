@@ -4,6 +4,7 @@ import requests
 from datetime import datetime as dt
 import os
 import pandas as pd
+import time
 #Handling import errors for GitHub repositories
 def validinput(inputstr, positive_answer, negative_answer):
     answer= input(inputstr+'\n')
@@ -55,7 +56,11 @@ else:
         if downloaded_size >= total_size:
             print("\nDownload complete!")
     def download(url, file_name):
-        return urlretrieve(url, file_name, reporthook=download_progress_hook)
+        try:
+            return urlretrieve(url, file_name, reporthook=download_progress_hook)
+        except ConnectionError:
+            time.sleep(1)
+            return urlretrieve(url, file_name, reporthook=download_progress_hook)
 def Download_MAGIE(start, end, sites=['arm', 'dun', 'val', 'bir'], save_file_name=False):
     """
     Downloads MAGIE data for specified sites and date range, and saves it to a file.
@@ -141,10 +146,8 @@ def Download_MAGIE(start, end, sites=['arm', 'dun', 'val', 'bir'], save_file_nam
             if requests.get(f"{url}{filename}").status_code >= 400:
                 warnings.warn(f'File not found for site= {site} on ' + '{}-{}-{}'.format(*date[::-1]))
                 continue
-            
             # Download the file using wget
             download(f'{url}{filename}', filename)
-            
             # File bug handling for empty tabs appearing on some lines
             try:
                 # Try to read the file into a DataFrame
