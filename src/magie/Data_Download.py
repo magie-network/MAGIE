@@ -81,7 +81,7 @@ def exists_check(url, filename):
         time.sleep(1)
         return exists_check(url, filename)
 
-def Download_MAGIE(start, end, sites=['arm', 'dun', 'val', 'bir'], save_file_name=False):
+def download_magie(start, end, sites=['arm', 'dun', 'val', 'bir'], save_file_name=False):
     """
     Downloads MAGIE data for specified sites and date range, and saves it to a file.
 
@@ -260,4 +260,4 @@ def Download_MAGIE(start, end, sites=['arm', 'dun', 'val', 'bir'], save_file_nam
     return save_file_name
 
 if __name__ == '__main__':
-    Download_MAGIE(np.datetime64('2022-01-01T00:00'), np.datetime64('2025-01-01T00:00'))
+    download_magie(np.datetime64('2022-01-01T00:00'), np.datetime64('2025-01-01T00:00'))
