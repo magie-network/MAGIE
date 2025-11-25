@@ -1,0 +1,35 @@
+[build-system]
+requires = ["setuptools>=65", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "magie"                       # pip name; usually lower-case
+version = "0.1.0"
+description = "K-index and magnetometer tools for MagIE."
+readme = "README.md"
+requires-python = ">=3.9"
+license = {text = "GNU GENERAL PUBLIC LICENSE
+                   Version 3" }           # or whatever your real license is
+
+authors = [
+  { name = "Simon Walker", email = "simon.walker@dias.ie" },
+]
+
+# Dependencies your code imports
+dependencies = [
+  "numpy",
+  "pandas",
+  "scipy",
+  "matplotlib",
+  # add others if used: "tqdm", "h5py", etc.
+]
+
+[project.urls]
+homepage = "https://github.com/08walkersj/MAGIE"
+repository = "https://github.com/08walkersj/MAGIE"
+
+[tool.setuptools]
+package-dir = {"" = "src"}
+
+[tool.setuptools.packages.find]
+where = ["src"]
