@@ -1,9 +1,9 @@
 from .k_index import provisional_k, finalised_k, live_k, plot_k
-from.Data_Download import Download_MAGIE
+from.Data_Download import download_magie
 
 
 __all__ = [
-    "Download_MAGIE",
+    "download_magie",
     "live_k",
     "provisional_k",
     "finalised_k",

@@ -4,12 +4,16 @@
 ## Install Guide
 ### pip install
 conda create -n magie python=3.14 # important to not use later python versions if building from pip
+
 conda activate magie
+
 pip install "git+https://github.com/08walkersj/MAGIE.git@master"
 
 ### Build from environment file (not as limited with python version)
 Alternatively:
+
 conda env create -f ./binder/environment.yml
+
 conda activate magie
 
 
