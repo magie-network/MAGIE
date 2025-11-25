@@ -1490,7 +1490,7 @@ def live_k(now_time, site_code, filter=True, **kwargs):
 @enforce_types(
     K_data=pd.DataFrame,
 )
-def plot_K(K_data):
+def plot_k(K_data):
     """
     Plot K-index values as colored 3-hour bars with a qualitative legend.
 
