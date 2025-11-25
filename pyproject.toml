@@ -7,7 +7,7 @@ name = "magie"                       # pip name; usually lower-case
 version = "0.1.0"
 description = "K-index and magnetometer tools for MagIE."
 readme = "README.md"
-requires-python = ">=3.10"
+requires-python = ">=3.10,<3.13"
 license = { text = "GNU General Public License v3" }
 
 
