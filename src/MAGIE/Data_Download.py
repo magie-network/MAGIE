@@ -24,43 +24,42 @@ except ImportError:
     def progressbar(*args, **kwargs):
         return args[0]
 from pandas.errors import ParserError
-from platform import system
-# If Linux download uses wget
-if 'Linux' in system():
-    def download(url, filename):
-        return os.system(f'wget {url}')
-# If not Linux use urllib.request.urlretrieve
-else:
-    from urllib.request import urlretrieve
-    import sys
-    def download_progress_hook(count, block_size, total_size):
-        """
-        Report hook to display a progress bar for downloading.
-        
-        :param count: Current block number being downloaded.
-        :param block_size: Size of each block (in bytes).
-        :param total_size: Total size of the file (in bytes).
-        """
-        # Calculate percentage of the download
-        downloaded_size = count * block_size
-        percentage = min(100, downloaded_size * 100 / total_size)
-        
-        # Create a simple progress bar
-        progress_bar = f"\rDownloading: {percentage:.2f}% [{downloaded_size}/{total_size} bytes]"
-        
-        # Update the progress on the same line
-        sys.stdout.write(progress_bar)
-        sys.stdout.flush()
+from urllib.request import urlretrieve
+import sys
+def download_progress_hook(count, block_size, total_size):
+    """
+    Report hook to display a progress bar for downloading.
+    
+    :param count: Current block number being downloaded.
+    :param block_size: Size of each block (in bytes).
+    :param total_size: Total size of the file (in bytes).
+    """
+    # Calculate percentage of the download
+    downloaded_size = count * block_size
+    percentage = min(100, downloaded_size * 100 / total_size)
+    
+    # Create a simple progress bar
+    progress_bar = f"\rDownloading: {percentage:.2f}% [{downloaded_size}/{total_size} bytes]"
+    
+    # Update the progress on the same line
+    sys.stdout.write(progress_bar)
+    sys.stdout.flush()
 
-        # When download is complete
-        if downloaded_size >= total_size:
-            print("\nDownload complete!")
-    def download(url, file_name):
-        try:
-            return urlretrieve(url, file_name, reporthook=download_progress_hook)
-        except ConnectionError:
-            time.sleep(1)
-            return urlretrieve(url, file_name, reporthook=download_progress_hook)
+    # When download is complete
+    if downloaded_size >= total_size:
+        print("\nDownload complete!")
+def download(url, file_name):
+    try:
+        return urlretrieve(url, file_name, reporthook=download_progress_hook)
+    except ConnectionError:
+        time.sleep(1)
+        return urlretrieve(url, file_name, reporthook=download_progress_hook)
+def exists_check(url, filename):
+    try:
+        return requests.get(f"{url}{filename}").status_code
+    except requests.exceptions.ConnectionError:
+        time.sleep(1)
+        return exists_check(url, filename)
 def Download_MAGIE(start, end, sites=['arm', 'dun', 'val', 'bir'], save_file_name=False):
     """
     Downloads MAGIE data for specified sites and date range, and saves it to a file.
@@ -143,7 +142,7 @@ def Download_MAGIE(start, end, sites=['arm', 'dun', 'val', 'bir'], save_file_nam
             filename = site + '{}{}{}.txt'.format(*date)
             
             # Check if the file exists on the server
-            if requests.get(f"{url}{filename}").status_code >= 400:
+            if  exists_check(url, filename)>= 400:
                 warnings.warn(f'File not found for site= {site} on ' + '{}-{}-{}'.format(*date[::-1]))
                 continue
             # Download the file using wget

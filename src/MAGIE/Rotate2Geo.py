@@ -139,7 +139,7 @@ def rotate_east(X, Y, angle):
 
 
 def Unknown2Geo(csv_file, glon, glat, X='Bx', Y='By', Z='Bz', datetime='Date_UTC', year_average_kwargs={},
-                get_model_field= get_chaos_field, model_kwargs={'chaos_model':'../Data/CHAOS-8.1.mat'}):
+                get_model_field= get_chaos_field, model_kwargs={'chaos_model':'../../Data/CHAOS-8.1.mat'}):
     kwargs= {'average_function':Huber}
     kwargs.update(year_average_kwargs)
     df= vx.open(csv_file)
