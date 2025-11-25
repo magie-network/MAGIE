@@ -1,35 +1,53 @@
-#Imports
+# Imports
 import numpy as np
 import requests
 from datetime import datetime as dt
 import os
 import pandas as pd
 import time
-#Handling import errors for GitHub repositories
+# Handling import errors for GitHub repositories
 def validinput(inputstr, positive_answer, negative_answer):
-    answer= input(inputstr+'\n')
-    if answer==positive_answer:
+    answer = input(inputstr+'\n')
+    if answer == positive_answer:
         return True
-    elif answer== negative_answer:
+    elif answer == negative_answer:
         return False
     else:
-        print('Invalid response should be either '+ str(positive_answer)+ ' or ' +str(negative_answer))
+        print('Invalid response should be either ' + str(positive_answer) + ' or ' + str(negative_answer))
         return validinput(inputstr, positive_answer, negative_answer)
+
 from MAGIE.Filename_tools import date2filename
 import warnings
-#Creates non functioning progessbar if the import of the progressbar package is not possible
-try:
-    from progressbar import progressbar
-except ImportError:
-    def progressbar(*args, **kwargs):
-        return args[0]
+
+# Creates a tqdm-based progressbar if available; otherwise a non-functioning one (identity)
+from tqdm import tqdm
+
+def progressbar(iterable, max_value=None, **kwargs):
+    """
+    Wraps tqdm to keep the same API as the old `progressbar` package.
+
+    Parameters
+    ----------
+    iterable : iterable
+        The iterable to wrap.
+    max_value : int, optional
+        The total number of iterations (mapped to tqdm's `total` argument).
+    **kwargs :
+        Additional keyword arguments passed to tqdm.
+    """
+    if max_value is not None:
+        return tqdm(iterable, total=max_value, **kwargs)
+    else:
+        return tqdm(iterable, **kwargs)
+
 from pandas.errors import ParserError
 from urllib.request import urlretrieve
 import sys
+
 def download_progress_hook(count, block_size, total_size):
     """
     Report hook to display a progress bar for downloading.
-    
+
     :param count: Current block number being downloaded.
     :param block_size: Size of each block (in bytes).
     :param total_size: Total size of the file (in bytes).
@@ -37,10 +55,10 @@ def download_progress_hook(count, block_size, total_size):
     # Calculate percentage of the download
     downloaded_size = count * block_size
     percentage = min(100, downloaded_size * 100 / total_size)
-    
+
     # Create a simple progress bar
     progress_bar = f"\rDownloading: {percentage:.2f}% [{downloaded_size}/{total_size} bytes]"
-    
+
     # Update the progress on the same line
     sys.stdout.write(progress_bar)
     sys.stdout.flush()
@@ -48,18 +66,21 @@ def download_progress_hook(count, block_size, total_size):
     # When download is complete
     if downloaded_size >= total_size:
         print("\nDownload complete!")
+
 def download(url, file_name):
     try:
         return urlretrieve(url, file_name, reporthook=download_progress_hook)
     except ConnectionError:
         time.sleep(1)
         return urlretrieve(url, file_name, reporthook=download_progress_hook)
+
 def exists_check(url, filename):
     try:
         return requests.get(f"{url}{filename}").status_code
     except requests.exceptions.ConnectionError:
         time.sleep(1)
         return exists_check(url, filename)
+
 def Download_MAGIE(start, end, sites=['arm', 'dun', 'val', 'bir'], save_file_name=False):
     """
     Downloads MAGIE data for specified sites and date range, and saves it to a file.
@@ -103,14 +124,18 @@ def Download_MAGIE(start, end, sites=['arm', 'dun', 'val', 'bir'], save_file_nam
     
     # Adjust the start date if it is earlier than the first available year
     if start < np.datetime64(f'{min_year}-01-01'):
-        warnings.warn(f'Start time is less than the first year available from site: {min_year}. '
-                      'The download will begin at the first year available.')
+        warnings.warn(
+            f'Start time is less than the first year available from site: {min_year}. '
+            'The download will begin at the first year available.'
+        )
         start = np.datetime64(f'{min_year}-01-01')
     
     # Adjust the end date if it is later than the last available year
     if end > np.datetime64(f'{max_year}-12-31'):
-        warnings.warn(f'End time is greater than the last year available from site: {max_year}. '
-                      'The download will end at the last year available.')
+        warnings.warn(
+            f'End time is greater than the last year available from site: {max_year}. '
+            'The download will end at the last year available.'
+        )
         end = np.datetime64(f'{max_year}-12-31')
     
     # Create a default filename if none is provided
@@ -120,8 +145,10 @@ def Download_MAGIE(start, end, sites=['arm', 'dun', 'val', 'bir'], save_file_nam
     # Check if the save file already exists
     if os.path.isfile(save_file_name):
         if not validinput(f'save file: {save_file_name} already exists. Append to pre-existing file? (y/n)', 'y', 'n'):
-            raise FileExistsError('Please either provide a new save file path using "save_file_name" argument '
-                                  'or delete existing file and rerun')
+            raise FileExistsError(
+                'Please either provide a new save file path using "save_file_name" argument '
+                'or delete existing file and rerun'
+            )
         else:
             warnings.warn(f'Appending to pre-existing file: {save_file_name}', UserWarning)
     
@@ -131,9 +158,11 @@ def Download_MAGIE(start, end, sites=['arm', 'dun', 'val', 'bir'], save_file_nam
     drop_index[1] = 'Site'
     
     # Construct an array of dates to download
-    dates = np.array([start + np.timedelta64(i, 'D') for i in range((end - start).astype('timedelta64[D]').astype(int) + 1)])
+    dates = np.array(
+        [start + np.timedelta64(i, 'D') for i in range((end - start).astype('timedelta64[D]').astype(int) + 1)]
+    )
     
-    # Loop through each date and download the data
+    # Loop through each date and download the data (using tqdm-backed progressbar)
     for date in progressbar(dates, max_value=len(dates)):
         date = date.astype('datetime64[D]').astype(str).split('-')
         url = url_prefix + '{}/{}/{}/txt/'.format(*date)
@@ -142,7 +171,7 @@ def Download_MAGIE(start, end, sites=['arm', 'dun', 'val', 'bir'], save_file_nam
             filename = site + '{}{}{}.txt'.format(*date)
             
             # Check if the file exists on the server
-            if  exists_check(url, filename)>= 400:
+            if exists_check(url, filename) >= 400:
                 warnings.warn(f'File not found for site= {site} on ' + '{}-{}-{}'.format(*date[::-1]))
                 continue
             # Download the file using wget
@@ -150,9 +179,15 @@ def Download_MAGIE(start, end, sites=['arm', 'dun', 'val', 'bir'], save_file_nam
             # File bug handling for empty tabs appearing on some lines
             try:
                 # Try to read the file into a DataFrame
-                file = pd.read_csv(filename, delimiter='\t', 
-                                   names=columns, 
-                                   skiprows=1, parse_dates=['Date_UTC'], dayfirst=True, index_col=False).replace(99.99999e3, np.nan)
+                file = pd.read_csv(
+                    filename,
+                    delimiter='\t',
+                    names=columns,
+                    skiprows=1,
+                    parse_dates=['Date_UTC'],
+                    dayfirst=True,
+                    index_col=False
+                ).replace(99.99999e3, np.nan)
                 file['Site'] = [site] * len(file)
             except ParserError:
                 # Handle ParserError by modifying the file content and re-reading it
@@ -174,9 +209,15 @@ def Download_MAGIE(start, end, sites=['arm', 'dun', 'val', 'bir'], save_file_nam
                 with open('bad_files.txt', 'w') as f:
                     f.write(bad_files)
                     f.close()
-                file = pd.read_csv(filename, delimiter='\t', 
-                                   names=columns, 
-                                   skiprows=1, parse_dates=['Date_UTC'], dayfirst=True, index_col=False).replace(99.99999e3, np.nan)
+                file = pd.read_csv(
+                    filename,
+                    delimiter='\t',
+                    names=columns,
+                    skiprows=1,
+                    parse_dates=['Date_UTC'],
+                    dayfirst=True,
+                    index_col=False
+                ).replace(99.99999e3, np.nan)
                 file['Site'] = [site] * len(file)
             
             # File bug handling when last line of the file contains incomplete data points
@@ -203,12 +244,20 @@ def Download_MAGIE(start, end, sites=['arm', 'dun', 'val', 'bir'], save_file_nam
                     if file[column].dtype == 'O':
                         file[column] = file[column].astype('float64')
             
-            # Save the data to an HDF5 file using specified columns (the index column is removed as it is meaningless in a merged file)
-            file[drop_index].to_hdf(save_file_name, key='main', mode='a', append=True, format='t', data_columns=True)
+            # Save the data to an HDF5 file using specified columns
+            # (the index column is removed as it is meaningless in a merged file)
+            file[drop_index].to_hdf(
+                save_file_name,
+                key='main',
+                mode='a',
+                append=True,
+                format='t',
+                data_columns=True
+            )
             
             # Remove the downloaded file to save space
             os.remove(filename)
     return save_file_name
 
-if __name__=='__main__':
+if __name__ == '__main__':
     Download_MAGIE(np.datetime64('2022-01-01T00:00'), np.datetime64('2025-01-01T00:00'))
