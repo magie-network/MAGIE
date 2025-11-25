@@ -7,21 +7,26 @@ name = "magie"                       # pip name; usually lower-case
 version = "0.1.0"
 description = "K-index and magnetometer tools for MagIE."
 readme = "README.md"
-requires-python = ">=3.9"
-license = {text = "GNU GENERAL PUBLIC LICENSE
-                   Version 3" }           # or whatever your real license is
+requires-python = ">=3.10"
+license = { text = "GNU General Public License v3" }
+
 
 authors = [
   { name = "Simon Walker", email = "simon.walker@dias.ie" },
 ]
 
-# Dependencies your code imports
 dependencies = [
-  "numpy",
-  "pandas",
-  "scipy",
-  "matplotlib",
-  # add others if used: "tqdm", "h5py", etc.
+  "numpy>=2.3.5",
+  "pandas>=2.3.3",
+  "scipy>=1.16.2",
+  "matplotlib>=3.10.6",
+  "tqdm>=4.67.1",
+  "tables>=3.10.2",
+]
+
+[project.optional-dependencies]
+test = [
+  "pytest>=8.3.0",
 ]
 
 [project.urls]
