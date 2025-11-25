@@ -16,6 +16,8 @@ conda env create -f ./binder/environment.yml
 
 conda activate magie
 
+## Tutorials
+In the notebook folder a set of notebooks can be found to demonstrate how to use the magie package
 
 
 # File Problems
