@@ -3,7 +3,7 @@
 
 ## Install Guide
 ### pip install
-conda create -n magie python=3.13 # important to not use later python versions if building from pip
+conda create -n magie python=3.12 # important to not use later python versions if building from pip
 
 conda activate magie
 
