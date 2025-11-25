@@ -6,7 +6,38 @@ import warnings
 import os
 from tqdm import tqdm
 from concurrent.futures import ProcessPoolExecutor
-from MAGIE.utils import enforce_types
+from magie.utils import enforce_types
+
+
+#For loading packaged JSON resources
+import importlib.resources as importlib_resources
+
+
+def _load_default_site_thresholds():
+    """
+    Load the packaged ``site_thresholds.json`` that lives alongside this module.
+
+    This assumes ``site_thresholds.json`` is inside the same Python package
+    (e.g. src/magie/site_thresholds.json) and declared in pyproject.toml as
+    package data.
+    """
+    pkg = __package__ or "magie"
+    try:
+        # Modern API (Python 3.9+)
+        json_path = importlib_resources.files(pkg).joinpath("site_thresholds.json")
+        with json_path.open("r") as f:
+            return json.load(f)
+    except (FileNotFoundError, AttributeError):
+        # Fallback for older importlib.resources which may not have files()
+        try:
+            with importlib_resources.open_text(pkg, "site_thresholds.json") as f:
+                return json.load(f)
+        except FileNotFoundError as e:
+            raise FileNotFoundError(
+                "Default site_thresholds.json not found inside the "
+                f"'{pkg}' package. Either ensure it is installed as "
+                "package data or pass site_thresholds explicitly."
+            ) from e
 
 
 
@@ -572,14 +603,14 @@ def _provisional_kindexhdf(
 @enforce_types(
     df_or_path=(pd.DataFrame, str),
     reference_thresholds=(np.ndarray, list, tuple, pd.Series),
-    site_thresholds=(dict, str),
+    site_thresholds=(dict, str, type(None)),
     site_code=str,
     use_mag_filter=bool,
 )
 def provisional_k(
         df_or_path,
         reference_thresholds=np.array([0, 5, 10, 20, 40, 70, 120, 200, 330, 500]),
-        site_thresholds='site_thresholds.json',
+        site_thresholds=None,
         site_code='dun',
         use_mag_filter=True,
         **kindex_hdf_kwargs
@@ -592,8 +623,11 @@ def provisional_k(
     df_or_path : DataFrame or str
         DataFrame with Bx/By(/Bz) and DatetimeIndex, or path to
         .hdf5/.h5/.csv/.txt.
-    site_thresholds : dict or str
-        Dict {site_code: k9} or path to JSON defining such a dict.
+    site_thresholds : dict or str or None
+        - dict: {site_code: k9} mapping (e.g. {'dun': 570, 'arm': 630})
+        - str : path to a JSON file containing such a dict
+        - None: load the packaged ``site_thresholds.json`` that is shipped
+          with the magie package.
     site_code : str
         Used in single-site mode when there is no 'Site' column.
     use_mag_filter : bool, optional
@@ -605,9 +639,12 @@ def provisional_k(
         For purely synthetic or already-minute-averaged data, set
         `use_mag_filter=False` to avoid over-filtering.
     """
-
-    # Load site thresholds if given as file path
-    if isinstance(site_thresholds, str):
+    # --- Normalise site_thresholds (None / str / dict) ---
+    if site_thresholds is None:
+        # Load packaged default JSON
+        site_thresholds = _load_default_site_thresholds()
+    elif isinstance(site_thresholds, str):
+        # User-supplied path to a JSON file
         with open(site_thresholds, 'r') as f:
             site_thresholds = json.load(f)
 
@@ -1085,11 +1122,12 @@ def _run_finalised_k_pipeline(
         return data_k.iloc[0:0]
 
     return pd.concat(results).sort_index()
+
 @enforce_types(
     df_or_path=(pd.DataFrame, str),
     k_data_or_path=(pd.DataFrame, str, type(None)),
     reference_thresholds=(np.ndarray, list, tuple, pd.Series),
-    site_thresholds=(dict, str),
+    site_thresholds=(dict, str, type(None)),
     site_code=(str, type(None)),
     provisional_kwargs=(dict, type(None)),
     final_kwargs=(dict, type(None)),
@@ -1099,42 +1137,31 @@ def finalised_k(
         df_or_path,
         k_data_or_path=None,
         reference_thresholds=np.array([0, 5, 10, 20, 40, 70, 120, 200, 330, 500]),
-        site_thresholds='site_thresholds.json',
+        site_thresholds=None,
         site_code='dun',
         provisional_kwargs=None,
         final_kwargs=None,
         use_mag_filter=True,
 ):
     """
-    Compute final (smoothed) K-index for a DataFrame or a file path.
+    Compute final (smoothed) K-index for a DataFrame or a file.
 
     Parameters
     ----------
-    df_or_path : pandas.DataFrame or str
-        Magnetic data or path to .hdf5/.h5/.csv/.txt containing magnetic data.
-    k_data_or_path : pandas.DataFrame, str, or None
-        Precomputed provisional K or path to it; if None, it is computed.
-    reference_thresholds : array-like
-        Base thresholds scaled by site k9 values.
-    site_thresholds : dict or str
-        Mapping of site codes to k9 values, or JSON file path with that mapping.
-    site_code : str or None
-        Site code for single-site data; ignored for multi-site inputs.
-    provisional_kwargs : dict, optional
-        Extra args forwarded to ``provisional_k`` when computing provisional K.
-    final_kwargs : dict, optional
-        Extra args forwarded to ``_run_finalised_k_pipeline``.
-    use_mag_filter : bool
-        If True, apply ``mag_filter`` to raw data.
-
-    Returns
-    -------
-    pandas.DataFrame or str
-        Finalised K dataframe for in-memory inputs, or path to outfile for HDF streaming.
+    site_thresholds : dict or str or None
+        - dict: {site_code: k9} mapping
+        - str : path to JSON with such a mapping
+        - None: load the packaged ``site_thresholds.json``.
+    use_mag_filter : bool, optional
+        If True (default), mag_filter is applied in the provisional
+        step on raw data (see provisional_k). Set to False for synthetic
+        or already-minute-averaged tests.
     """
 
-    # Load site thresholds if given as file path
-    if isinstance(site_thresholds, str):
+    # --- Normalise site_thresholds (None / str / dict) ---
+    if site_thresholds is None:
+        site_thresholds = _load_default_site_thresholds()
+    elif isinstance(site_thresholds, str):
         with open(site_thresholds, 'r') as f:
             site_thresholds = json.load(f)
 
@@ -1402,7 +1429,7 @@ def _get_live(date, site_code):
     --------
     >>> _get_live(pd.Timestamp('2024-01-02'), 'dun')  # doctest: +SKIP
     """
-    from MAGIE.Data_Download import download
+    from magie.Data_Download import download
     url_prefix = 'https://data.magie.ie/'
     if isinstance(date, pd.Timestamp):
         date= date.to_numpy()

@@ -16,7 +16,7 @@ def validinput(inputstr, positive_answer, negative_answer):
         print('Invalid response should be either ' + str(positive_answer) + ' or ' + str(negative_answer))
         return validinput(inputstr, positive_answer, negative_answer)
 
-from MAGIE.Filename_tools import date2filename
+from magie.Filename_tools import date2filename
 import warnings
 
 # Creates a tqdm-based progressbar if available; otherwise a non-functioning one (identity)
