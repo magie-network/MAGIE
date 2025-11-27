@@ -5,7 +5,7 @@ import pandas as pd
 import matplotlib.pyplot as plt
 plt.style.use('tableau-colorblind10')
 import matplotlib.dates as mdates
-from Data_Download import Download_MAGIE
+from magie.Data_Download import download_magie
 
 def fix_missing_timestamps(df, site_col="Site"):
     """

@@ -7,89 +7,19 @@ import pandas as pd
 import time
 from urllib.parse import urlencode
 from io import StringIO
-# Handling import errors for GitHub repositories
-def validinput(inputstr, positive_answer, negative_answer):
-    answer = input(inputstr+'\n')
-    if answer == positive_answer:
-        return True
-    elif answer == negative_answer:
-        return False
-    else:
-        print('Invalid response should be either' + str(positive_answer) + ' or ' + str(negative_answer))
-        return validinput(inputstr, positive_answer, negative_answer)
-
-class ArgumentError(Exception):
-    """
-    Custom exception class to handle argument-related errors.
-    Raised when the function receives invalid input.
-    """
-    pass
-
-def dates2npdate(func):
-    def wrapper(date, *args):
-        import pandas as pd
-        from datetime import datetime
-        if isinstance(date, np.datetime64):
-            pass
-        elif isinstance(date, pd.Timestamp):
-            date=date.to_numpy()
-        elif isinstance(date, datetime):
-            date=np.datetime64(date)
-        else:
-            raise ArgumentError(f'date type yet not known, update code or change format. Current type: {type(date)}')
-        return func(date, *args)
-    return wrapper
-@dates2npdate
-def date2filename(date):
-    import re
-    return '_'.join('_'.join(re.split('   |-|:', f'{date.astype("datetime64[m]").tolist()}')).split(' '))
-def filename2date(filename):
-    date=np.empty(3).astype(str)
-    time=np.empty(3).astype(str)
-    date[0], date[1], date[2], time[0], time[1], time[2]= filename.split('_')
-    return np.datetime64('-'.join(date)+'T'+':'.join(time))
-import warnings
-#Creates non functioning progressbar if the import of the progressbar package is not possible
-try:
-    from progressbar import progressbar
-except ImportError:
-    def progressbar(*args, **kwargs):
-        return args[0]
-from pandas.errors import ParserError
-from platform import system
-# If Linux download uses wget
-if 'Linux' in system():
-    def download(url, filename):
-        return os.system(f'wget {url}')
-# If not Linux use urllib.request.urlretrieve
-else:
-    from urllib.request import urlretrieve
-    import sys
-    def download_progress_hook(count, block_size, total_size):
-        """
-        Report hook to display a progress bar for downloading.
-        
-        :param count: Current block number being downloaded.
-        :param block_size: Size of each block (in bytes).
-        :param total_size: Total size of the file (in bytes).
-        """
-        # Calculate percentage of the download
-        downloaded_size = count * block_size
-        percentage = min(100, downloaded_size * 100 / total_size)
-        
-        # Create a simple progress bar
-        progress_bar = f"\rDownloading: {percentage:.2f}% [{downloaded_size}/{total_size} bytes]"
-        
-        # Update the progress on the same line
-        sys.stdout.write(progress_bar)
-        sys.stdout.flush()
-
 from magie.Filename_tools import date2filename
 import warnings
-
-# Creates a tqdm-based progressbar if available; otherwise a non-functioning one (identity)
+import sys
+from urllib.request import urlretrieve
+from pandas.errors import ParserError
+from magie.utils import validinput, enforce_types
 from tqdm import tqdm
 
+
+@enforce_types(
+    max_value=(int, type(None)),
+)
+# Creates a tqdm-based progressbar
 def progressbar(iterable, max_value=None, **kwargs):
     """
     Wraps tqdm to keep the same API as the old `progressbar` package.
@@ -108,10 +38,12 @@ def progressbar(iterable, max_value=None, **kwargs):
     else:
         return tqdm(iterable, **kwargs)
 
-from pandas.errors import ParserError
-from urllib.request import urlretrieve
-import sys
 
+@enforce_types(
+    count=int,
+    block_size=int,
+    total_size=int,
+)
 def download_progress_hook(count, block_size, total_size):
     """
     Report hook to display a progress bar for downloading.
@@ -135,20 +67,51 @@ def download_progress_hook(count, block_size, total_size):
     if downloaded_size >= total_size:
         print("\nDownload complete!")
 
+
+@enforce_types(
+    url=str,
+    file_name=str,
+)
 def download(url, file_name):
+    """
+    Downloads the file at url and saves it to file_name.
+
+    :param url: url of the file to download.
+    :param file_name: file_name and path of where to save the downloaded file.
+    """
     try:
         return urlretrieve(url, file_name, reporthook=download_progress_hook)
+    # If could not connect to file due to connection error we wait one second and retry.
+    # This will solve issues where servers have recieved too many requests from user
     except ConnectionError:
         time.sleep(1)
         return urlretrieve(url, file_name, reporthook=download_progress_hook)
 
+
+@enforce_types(
+    url=str,
+    filename=str,
+)
 def exists_check(url, filename):
+    """
+    Checks if the url exists .
+
+    :param url: url of the file to download.
+    :param file_name: file_name and path of where to save the downloaded file.
+    """
     try:
         return requests.get(f"{url}{filename}").status_code
     except requests.exceptions.ConnectionError:
         time.sleep(1)
         return exists_check(url, filename)
 
+
+@enforce_types(
+    start=np.datetime64,
+    end=np.datetime64,
+    sites=list,
+    save_file_name=(str, bool),
+)
 def download_magie(start, end, sites=['arm', 'dun', 'val', 'bir'], save_file_name=False):
     """
     Downloads MAGIE data for specified sites and date range, and saves it to a file.
@@ -357,8 +320,19 @@ def download_magie(start, end, sites=['arm', 'dun', 'val', 'bir'], save_file_nam
     return save_file_name
 
 
+@enforce_types(
+    dataStartDate=dt,
+    iagaSites=list,
+    dataDuration=int,
+    orientation=str,
+    samples=str,
+    dataFormat=str,
+    state=str,
+    print_progress=bool,
+)
 def get_GIN_data(dataStartDate, iagaSites, dataDuration, orientation,
-                 samples="Minute", dataFormat="iaga2002", state="best-avail"):
+                 samples="Minute", dataFormat="iaga2002", state="best-avail",
+                 print_progress=True):
     """
     Get magnetic data using http from Edinburgh GIN for a list of
     observatories over continous days and saves iaga2002 format data 
@@ -404,6 +378,9 @@ def get_GIN_data(dataStartDate, iagaSites, dataDuration, orientation,
         "quasi-def" - quasi-definitive data
         "adjusted" - provisional (also called adjusted) data
         "reported" - variometer (also called reported) data
+    print_progress: bool optional
+        default: True
+        set to False to quiet print statements
 
     Raises:
     -------
@@ -448,8 +425,8 @@ def get_GIN_data(dataStartDate, iagaSites, dataDuration, orientation,
         except requests.HTTPError as e:
             raise RuntimeError(f"HTTP status code {resp.status_code} \n\
                                for {resp.url}") from e
-
-        print(f'{dataDuration} day(s) of {dataStartDate} data for {obs} is \n\
+        if print_progress:
+            print(f'{dataDuration} day(s) of {dataStartDate} data for {obs} is \n\
         getting extracted from:\n{url}')
 
         data = resp.text
@@ -471,13 +448,14 @@ def get_GIN_data(dataStartDate, iagaSites, dataDuration, orientation,
                 afterDataFlag = True
             else:
                 headerData.append(lineStrip)
-
-        print('Mandatory file header records')
+        if print_progress:
+            print('Mandatory file header records')
         for i, line in enumerate(headerData):
             print(f"{i}: [{line}]")
 
         colNames = columnHeader[0].split()
-        print(f'Column header for {obs} is: {colNames}')
+        if print_progress:
+            print(f'Column header for {obs} is: {colNames}')
         # parse_date is deprecated so not used
         df = pd.read_csv(StringIO("\n".join(numericLines)), sep=r'\s+',
                          names=colNames)
@@ -492,5 +470,5 @@ def get_GIN_data(dataStartDate, iagaSites, dataDuration, orientation,
 
 
 if __name__ == '__main__':
-    Download_MAGIE(np.datetime64('2022-01-01T00:00'),
+    download_magie(np.datetime64('2022-01-01T00:00'),
                    np.datetime64('2025-01-01T00:00'))
