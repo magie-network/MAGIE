@@ -12,9 +12,13 @@ import warnings
 import sys
 from urllib.request import urlretrieve
 from pandas.errors import ParserError
-from magie.utils import validinput
+from magie.utils import validinput, enforce_types
 from tqdm import tqdm
 
+
+@enforce_types(
+    max_value=(int, type(None)),
+)
 # Creates a tqdm-based progressbar
 def progressbar(iterable, max_value=None, **kwargs):
     """
@@ -34,6 +38,12 @@ def progressbar(iterable, max_value=None, **kwargs):
     else:
         return tqdm(iterable, **kwargs)
 
+
+@enforce_types(
+    count=int,
+    block_size=int,
+    total_size=int,
+)
 def download_progress_hook(count, block_size, total_size):
     """
     Report hook to display a progress bar for downloading.
@@ -57,20 +67,51 @@ def download_progress_hook(count, block_size, total_size):
     if downloaded_size >= total_size:
         print("\nDownload complete!")
 
+
+@enforce_types(
+    url=str,
+    file_name=str,
+)
 def download(url, file_name):
+    """
+    Downloads the file at url and saves it to file_name.
+
+    :param url: url of the file to download.
+    :param file_name: file_name and path of where to save the downloaded file.
+    """
     try:
         return urlretrieve(url, file_name, reporthook=download_progress_hook)
+    # If could not connect to file due to connection error we wait one second and retry.
+    # This will solve issues where servers have recieved too many requests from user
     except ConnectionError:
         time.sleep(1)
         return urlretrieve(url, file_name, reporthook=download_progress_hook)
 
+
+@enforce_types(
+    url=str,
+    filename=str,
+)
 def exists_check(url, filename):
+    """
+    Checks if the url exists .
+
+    :param url: url of the file to download.
+    :param file_name: file_name and path of where to save the downloaded file.
+    """
     try:
         return requests.get(f"{url}{filename}").status_code
     except requests.exceptions.ConnectionError:
         time.sleep(1)
         return exists_check(url, filename)
 
+
+@enforce_types(
+    start=np.datetime64,
+    end=np.datetime64,
+    sites=list,
+    save_file_name=(str, bool),
+)
 def download_magie(start, end, sites=['arm', 'dun', 'val', 'bir'], save_file_name=False):
     """
     Downloads MAGIE data for specified sites and date range, and saves it to a file.
@@ -279,6 +320,16 @@ def download_magie(start, end, sites=['arm', 'dun', 'val', 'bir'], save_file_nam
     return save_file_name
 
 
+@enforce_types(
+    dataStartDate=dt,
+    iagaSites=list,
+    dataDuration=int,
+    orientation=str,
+    samples=str,
+    dataFormat=str,
+    state=str,
+    print_progress=bool,
+)
 def get_GIN_data(dataStartDate, iagaSites, dataDuration, orientation,
                  samples="Minute", dataFormat="iaga2002", state="best-avail",
                  print_progress=True):
