@@ -14,8 +14,8 @@ from urllib.request import urlretrieve
 from pandas.errors import ParserError
 from magie.utils import validinput
 from tqdm import tqdm
-# Creates a tqdm-based progressbar
 
+# Creates a tqdm-based progressbar
 def progressbar(iterable, max_value=None, **kwargs):
     """
     Wraps tqdm to keep the same API as the old `progressbar` package.
@@ -280,7 +280,8 @@ def download_magie(start, end, sites=['arm', 'dun', 'val', 'bir'], save_file_nam
 
 
 def get_GIN_data(dataStartDate, iagaSites, dataDuration, orientation,
-                 samples="Minute", dataFormat="iaga2002", state="best-avail"):
+                 samples="Minute", dataFormat="iaga2002", state="best-avail",
+                 print_progress=True):
     """
     Get magnetic data using http from Edinburgh GIN for a list of
     observatories over continous days and saves iaga2002 format data 
@@ -326,6 +327,9 @@ def get_GIN_data(dataStartDate, iagaSites, dataDuration, orientation,
         "quasi-def" - quasi-definitive data
         "adjusted" - provisional (also called adjusted) data
         "reported" - variometer (also called reported) data
+    print_progress: bool optional
+        default: True
+        set to False to quiet print statements
 
     Raises:
     -------
@@ -370,8 +374,8 @@ def get_GIN_data(dataStartDate, iagaSites, dataDuration, orientation,
         except requests.HTTPError as e:
             raise RuntimeError(f"HTTP status code {resp.status_code} \n\
                                for {resp.url}") from e
-
-        print(f'{dataDuration} day(s) of {dataStartDate} data for {obs} is \n\
+        if print_progress:
+            print(f'{dataDuration} day(s) of {dataStartDate} data for {obs} is \n\
         getting extracted from:\n{url}')
 
         data = resp.text
@@ -393,13 +397,14 @@ def get_GIN_data(dataStartDate, iagaSites, dataDuration, orientation,
                 afterDataFlag = True
             else:
                 headerData.append(lineStrip)
-
-        print('Mandatory file header records')
+        if print_progress:
+            print('Mandatory file header records')
         for i, line in enumerate(headerData):
             print(f"{i}: [{line}]")
 
         colNames = columnHeader[0].split()
-        print(f'Column header for {obs} is: {colNames}')
+        if print_progress:
+            print(f'Column header for {obs} is: {colNames}')
         # parse_date is deprecated so not used
         df = pd.read_csv(StringIO("\n".join(numericLines)), sep=r'\s+',
                          names=colNames)
@@ -414,5 +419,5 @@ def get_GIN_data(dataStartDate, iagaSites, dataDuration, orientation,
 
 
 if __name__ == '__main__':
-    Download_MAGIE(np.datetime64('2022-01-01T00:00'),
+    download_magie(np.datetime64('2022-01-01T00:00'),
                    np.datetime64('2025-01-01T00:00'))
