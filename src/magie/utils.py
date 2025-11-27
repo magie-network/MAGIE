@@ -46,13 +46,40 @@ def enforce_types(**type_map):
         return wrapper
 
     return decorator
-# Handling import errors for GitHub repositories
+
+@enforce_types(
+    inputstr=str,
+    positive_answer=str,
+    negative_answer=str,
+)
 def validinput(inputstr, positive_answer, negative_answer):
-    answer = input(inputstr+'\n')
-    if answer == positive_answer:
+    """
+    Ask for a yes/no style response and enforce one of two allowed answers.
+
+    Parameters
+    ----------
+    inputstr : str
+        Prompt shown to the user.
+    positive_answer : str
+        Accepted value that maps to True.
+    negative_answer : str
+        Accepted value that maps to False.
+
+    Returns
+    -------
+    bool
+        True for ``positive_answer``, False for ``negative_answer``.
+
+    Examples
+    --------
+    >>> validinput('Continue?', 'y', 'n')  # doctest: +SKIP
+    True
+    """
+    answer= input(inputstr+'\n')
+    if answer==positive_answer:
         return True
-    elif answer == negative_answer:
+    elif answer== negative_answer:
         return False
     else:
-        print('Invalid response should be either' + str(positive_answer) + ' or ' + str(negative_answer))
+        print('Invalid response should be either '+ str(positive_answer)+ ' or ' +str(negative_answer))
         return validinput(inputstr, positive_answer, negative_answer)
