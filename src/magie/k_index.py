@@ -6,7 +6,7 @@ import warnings
 import os
 from tqdm import tqdm
 from concurrent.futures import ProcessPoolExecutor
-from magie.utils import enforce_types
+from magie.utils import enforce_types, validinput
 
 
 #For loading packaged JSON resources
@@ -362,46 +362,6 @@ def data_padding(
     df_padded.index.name = df_site.index.name
     return df_padded
 
-
-
-
-
-@enforce_types(
-    inputstr=str,
-    positive_answer=str,
-    negative_answer=str,
-)
-def validinput(inputstr, positive_answer, negative_answer):
-    """
-    Ask for a yes/no style response and enforce one of two allowed answers.
-
-    Parameters
-    ----------
-    inputstr : str
-        Prompt shown to the user.
-    positive_answer : str
-        Accepted value that maps to True.
-    negative_answer : str
-        Accepted value that maps to False.
-
-    Returns
-    -------
-    bool
-        True for ``positive_answer``, False for ``negative_answer``.
-
-    Examples
-    --------
-    >>> validinput('Continue?', 'y', 'n')  # doctest: +SKIP
-    True
-    """
-    answer= input(inputstr+'\n')
-    if answer==positive_answer:
-        return True
-    elif answer== negative_answer:
-        return False
-    else:
-        print('Invalid response should be either '+ str(positive_answer)+ ' or ' +str(negative_answer))
-        return validinput(inputstr, positive_answer, negative_answer)
 @enforce_types(
     file=str,
     site_thresholds=(dict, int, float, np.number),

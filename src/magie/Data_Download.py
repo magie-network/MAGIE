@@ -7,88 +7,14 @@ import pandas as pd
 import time
 from urllib.parse import urlencode
 from io import StringIO
-# Handling import errors for GitHub repositories
-def validinput(inputstr, positive_answer, negative_answer):
-    answer = input(inputstr+'\n')
-    if answer == positive_answer:
-        return True
-    elif answer == negative_answer:
-        return False
-    else:
-        print('Invalid response should be either' + str(positive_answer) + ' or ' + str(negative_answer))
-        return validinput(inputstr, positive_answer, negative_answer)
-
-class ArgumentError(Exception):
-    """
-    Custom exception class to handle argument-related errors.
-    Raised when the function receives invalid input.
-    """
-    pass
-
-def dates2npdate(func):
-    def wrapper(date, *args):
-        import pandas as pd
-        from datetime import datetime
-        if isinstance(date, np.datetime64):
-            pass
-        elif isinstance(date, pd.Timestamp):
-            date=date.to_numpy()
-        elif isinstance(date, datetime):
-            date=np.datetime64(date)
-        else:
-            raise ArgumentError(f'date type yet not known, update code or change format. Current type: {type(date)}')
-        return func(date, *args)
-    return wrapper
-@dates2npdate
-def date2filename(date):
-    import re
-    return '_'.join('_'.join(re.split('   |-|:', f'{date.astype("datetime64[m]").tolist()}')).split(' '))
-def filename2date(filename):
-    date=np.empty(3).astype(str)
-    time=np.empty(3).astype(str)
-    date[0], date[1], date[2], time[0], time[1], time[2]= filename.split('_')
-    return np.datetime64('-'.join(date)+'T'+':'.join(time))
-import warnings
-#Creates non functioning progressbar if the import of the progressbar package is not possible
-try:
-    from progressbar import progressbar
-except ImportError:
-    def progressbar(*args, **kwargs):
-        return args[0]
-from pandas.errors import ParserError
-from platform import system
-# If Linux download uses wget
-if 'Linux' in system():
-    def download(url, filename):
-        return os.system(f'wget {url}')
-# If not Linux use urllib.request.urlretrieve
-else:
-    from urllib.request import urlretrieve
-    import sys
-    def download_progress_hook(count, block_size, total_size):
-        """
-        Report hook to display a progress bar for downloading.
-        
-        :param count: Current block number being downloaded.
-        :param block_size: Size of each block (in bytes).
-        :param total_size: Total size of the file (in bytes).
-        """
-        # Calculate percentage of the download
-        downloaded_size = count * block_size
-        percentage = min(100, downloaded_size * 100 / total_size)
-        
-        # Create a simple progress bar
-        progress_bar = f"\rDownloading: {percentage:.2f}% [{downloaded_size}/{total_size} bytes]"
-        
-        # Update the progress on the same line
-        sys.stdout.write(progress_bar)
-        sys.stdout.flush()
-
 from magie.Filename_tools import date2filename
 import warnings
-
-# Creates a tqdm-based progressbar if available; otherwise a non-functioning one (identity)
+import sys
+from urllib.request import urlretrieve
+from pandas.errors import ParserError
+from magie.utils import validinput
 from tqdm import tqdm
+# Creates a tqdm-based progressbar
 
 def progressbar(iterable, max_value=None, **kwargs):
     """
@@ -107,10 +33,6 @@ def progressbar(iterable, max_value=None, **kwargs):
         return tqdm(iterable, total=max_value, **kwargs)
     else:
         return tqdm(iterable, **kwargs)
-
-from pandas.errors import ParserError
-from urllib.request import urlretrieve
-import sys
 
 def download_progress_hook(count, block_size, total_size):
     """
