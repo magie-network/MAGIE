@@ -1,0 +1,8 @@
+[smtp]
+host = "server"
+port = port
+username = "username"
+password = "password"
+
+[email]
+from = "from_email"
