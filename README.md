@@ -1,4 +1,5 @@
-# MAGIE
+<img src="MagIE_Mags.png" alt="Magnetometer Map" width="400">
+
 ## Code useful for Irish magnetometers. Such as downloading from the website.
 
 ## Install Guide
