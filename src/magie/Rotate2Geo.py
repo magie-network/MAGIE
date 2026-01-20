@@ -1,7 +1,6 @@
 import pandas as pd
 import numpy as np
 import gc
-import vaex as vx
 import os
 def Huber_Mean(data, sd_lim=1.5, lim= 0.1, iter_lim= 20, rm_nan=True):
     """
@@ -70,11 +69,13 @@ def Huber(data):
             
 
 def get_average_field(df, average_function=np.mean, **average_function_kwargs):
+    import vaex as vx
     df["Year-Month"] = df["Date_UTC"].dt.to_period("M")
     monthly_averages= df.groupby('Year-Month')[['X', 'Y', 'Z']].agg(average_function)
     monthly_averages['Year']= monthly_averages.index.year
     return monthly_averages.groupby('Year')[['X', 'Y', 'Z']].agg(average_function).reset_index()
 def get_average_field(df, average_function=np.mean, **average_function_kwargs):
+    import vaex as vx
     df["Year-Month"] = df['Date_UTC'].dt.year.astype(str)+'-'+df['Date_UTC'].dt.month.apply(lambda x: f'{x:02d}')
     monthly_averages= df.groupby('Year-Month', agg={'X': vx.agg.list('X'), 'Y': vx.agg.list('Y'), 'Z': vx.agg.list('Z') }).to_pandas_df().set_index('Year-Month').map(average_function).reset_index()
     monthly_averages['Year']= monthly_averages['Year-Month'].apply(lambda x : x[:4])
@@ -140,6 +141,7 @@ def rotate_east(X, Y, angle):
 
 def Unknown2Geo(csv_file, glon, glat, X='Bx', Y='By', Z='Bz', datetime='Date_UTC', year_average_kwargs={},
                 get_model_field= get_chaos_field, model_kwargs={'chaos_model':'../../Data/CHAOS-8.1.mat'}):
+    import vaex as vx
     kwargs= {'average_function':Huber}
     kwargs.update(year_average_kwargs)
     df= vx.open(csv_file)
