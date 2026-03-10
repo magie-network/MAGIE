@@ -1522,3 +1522,200 @@ def plot_k(K_data):
     ax.spines[['top', 'right']].set_visible(False)
     ax.set_xlim(K_data.index.values.astype('datetime64[D]').min(), K_data.index.values.astype('datetime64[D]').max()+np.timedelta64(1, 'D'))
     return fig, ax, cax
+
+@enforce_types(
+    K_data=pd.DataFrame,
+)
+def plot_k_plotly(K_data: pd.DataFrame):
+
+    def add_3hour_gridlines(fig, start, end):
+        """
+        Draw vertical gridlines every 3 hours (matplotlib-style).
+        """
+        times = pd.date_range(start=start, end=end, freq="3h", tz="UTC")
+
+        for t in times:
+            fig.add_vline(
+                x=t,
+                line_width=1,
+                line_color="rgba(0,0,0,0.18)",  # light gridline
+                layer="below",                 # behind bars
+            )
+
+    import plotly.graph_objects as go
+    df = K_data.copy()
+
+    # Ensure datetime index (UTC)
+    if "Date_UTC" in df.columns:
+        df["Date_UTC"] = pd.to_datetime(df["Date_UTC"], utc=True, errors="coerce")
+        df = df.set_index("Date_UTC")
+    else:
+        df.index = pd.to_datetime(df.index, utc=True, errors="coerce")
+
+    df = df.sort_index()
+    df = df[df.index.notna()]
+
+    # Lift zeros for visibility (as in your mpl code)
+    df["K_index"] = df["K_index"].replace(0, 0.2)
+
+    # Color categories (match mpl)
+    def cat_color(k: float) -> str:
+        if 0 <= k <= 1:
+            return "blue"
+        if 2 <= k <= 3:
+            return "cyan"
+        if 4 <= k < 5:
+            return "green"
+        if 5 <= k < 6:
+            return "orange"
+        if 6 <= k <= 7:
+            return "red"
+        return "magenta"
+
+    bar_colors = df["K_index"].apply(cat_color)
+
+    # Bar width = 3 hours in ms
+    width_ms = 3 * 60 * 60 * 1000
+
+    # X range to day boundaries (like mpl)
+    day_min = df.index.min().floor("D")
+    day_max = df.index.max().floor("D") + pd.Timedelta(days=1)
+
+    # Daily ticks only (labels)
+    days = pd.date_range(day_min, day_max, freq="D", tz="UTC")
+    day_tickvals = list(days)
+    day_ticktext = [d.strftime("%Y-%m-%d") for d in days]
+
+    fig = go.Figure()
+    fig.update_layout(
+        width=1200,   # pixels
+        height=600,   # pixels
+    )
+    width_hours = 3
+    half_width = pd.Timedelta(hours=width_hours / 2)
+    width_ms = width_hours * 60 * 60 * 1000
+
+    x_left_edges = df.index                      # like matplotlib align='edge'
+    x_centers = x_left_edges + half_width        # plotly wants centers
+
+    fig.add_trace(
+        go.Bar(
+            x=x_centers,
+            y=df["K_index"],
+            width=width_ms,
+            marker=dict(color=bar_colors, line=dict(color="black", width=1)),
+        )
+    )
+
+
+    # --- Layout: reserve bottom space for legend strip
+    fig.update_layout(
+        barmode="overlay",
+        bargap=0,
+        plot_bgcolor="white",
+        paper_bgcolor="white",
+        showlegend=False,
+        height=520,
+        margin=dict(l=70, r=20, t=20, b=140),  # big bottom margin for legend strip
+    )
+
+    # --- Y axis like mpl
+    fig.update_yaxes(
+        range=[0, 9],
+        tickmode="array",
+        tickvals=list(range(0, 10)),
+        showgrid=False,
+        gridwidth=1,
+        zeroline=False,
+        title=None,
+    )
+
+    # --- X axis: daily labels only, but keep 3-hour gridlines
+    # Trick: set dtick to 3h for gridlines, but override ticks with daily tickvals/ticktext.
+    fig.update_xaxes(
+        range=[day_min, day_max],
+        showgrid=True,
+        dtick=3 * 60 * 60 * 1000,           # 3-hour grid spacing
+        tickmode="array",
+        tickvals=day_tickvals,              # ONLY show daily labels
+        ticktext=day_ticktext,
+        tickangle=0,
+        title=None,
+        zeroline=False,
+    )
+
+    # Make grid look a bit more like mpl dashed (Plotly only supports solid lines,
+    # but lighter grid helps approximate)
+    fig.update_xaxes(gridcolor="rgba(0,0,0,0.18)")
+    fig.update_yaxes(gridcolor="rgba(0,0,0,0.18)")
+
+    # -----------------------------
+    # Legend strip (like your cax)
+    # Draw a colored bar under the plot with boxed labels
+    # Use "paper" coordinates so it stays anchored.
+    # -----------------------------
+
+    legend_segments = [
+        ("Quiet<br>0-1",        "blue",    0.00, 0.1667),
+        ("Unsettled<br>2-3",    "cyan",    0.1667, 0.3334),
+        ("Active<br>4",         "green",   0.3334, 0.5001),
+        ("Minor Storm<br>5",    "orange",  0.5001, 0.6668),
+        ("Major Storm<br>6-7",  "red",     0.6668, 0.8335),
+        ("Severe Storm<br>8-9", "magenta", 0.8335, 1.00),
+    ]
+
+    # Legend strip vertical placement (paper coords)
+    y0, y1 = -0.31, -0.18
+    y_mid = (y0 + y1) / 2
+
+    for label, color, x0, x1 in legend_segments:
+        # colored block
+        fig.add_shape(
+            type="rect",
+            xref="paper", yref="paper",
+            x0=x0, x1=x1,
+            y0=y0, y1=y1,
+            line=dict(color="rgba(0,0,0,0.35)", width=1),
+            fillcolor=color,
+            layer="below",
+        )
+
+        # centered label
+        fig.add_annotation(
+            xref="paper", yref="paper",
+            x=(x0 + x1) / 2,
+            y=y_mid,
+            text=label,
+            showarrow=False,
+
+            # critical alignment controls
+            xanchor="center",
+            yanchor="middle",
+            align="center",
+
+            font=dict(size=14, color="black"),
+            bgcolor="rgba(255,255,255,0.55)",
+            bordercolor="rgba(0,0,0,0.35)",
+            borderwidth=1,
+
+            # optional pixel nudges (tweak if needed)
+            xshift=0,
+            yshift=0,
+        )
+    add_3hour_gridlines(fig, day_min, day_max)
+    fig.update_yaxes(showgrid=True)
+    fig.update_yaxes(
+        title_text="K Index (0–9)",
+        title_font=dict(size=30),
+        tickfont=dict(size=20)
+    )
+
+    fig.update_xaxes(
+        title_text="Universal Time",
+        title_font=dict(size=30),
+        tickfont=dict(size=20),
+        title_standoff=0,
+    )
+
+
+    return fig

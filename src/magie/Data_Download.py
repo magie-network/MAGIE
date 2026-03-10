@@ -54,7 +54,10 @@ def download_progress_hook(count, block_size, total_size):
     """
     # Calculate percentage of the download
     downloaded_size = count * block_size
-    percentage = min(100, downloaded_size * 100 / total_size)
+    if total_size!=0:
+        percentage = min(100, downloaded_size * 100 / total_size)
+    else:
+        percentage = 0
 
     # Create a simple progress bar
     progress_bar = f"\rDownloading: {percentage:.2f}% [{downloaded_size}/{total_size} bytes]"

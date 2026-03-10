@@ -8,7 +8,7 @@ conda create -n magie python=3.12 # important to not use later python versions i
 
 conda activate magie
 
-pip install "git+https://github.com/08walkersj/MAGIE.git@0.1.0"
+pip install "git+https://github.com/magie-network/MAGIE.git@0.1.0"
 
 ### Build from environment file (not as limited with python version)
 Alternatively:
