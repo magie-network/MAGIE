@@ -13,6 +13,7 @@ from magie.utils import enforce_types, validinput
 import importlib.resources as importlib_resources
 
 
+@enforce_types()
 def _load_default_site_thresholds():
     """
     Load the packaged ``site_thresholds.json`` that lives alongside this module.
@@ -1368,8 +1369,9 @@ def mag_filter(
 @enforce_types(
     date=(pd.Timestamp, np.datetime64, str),
     site_code=str,
+    path_prefix=str,
 )
-def _get_live(date, site_code):
+def _get_live(date, site_code, path_prefix='https://data.magie.ie/'):
     """
     Download a single day's live TXT data for a site from data.magie.ie.
 
@@ -1389,28 +1391,44 @@ def _get_live(date, site_code):
     --------
     >>> _get_live(pd.Timestamp('2024-01-02'), 'dun')  # doctest: +SKIP
     """
+    import tempfile
     from magie.Data_Download import download
-    url_prefix = 'https://data.magie.ie/'
-    if isinstance(date, pd.Timestamp):
-        date= date.to_numpy()
-    date = date.astype('datetime64[D]').astype(str).split('-')
-    url = url_prefix + '{}/{}/{}/txt/'.format(*date)
-    filename = site_code + '{}{}{}.txt'.format(*date)
-    download(f'{url}{filename}', filename)  # network fetch to local cwd
-    columns = ['Date_UTC', 'Index', 'Bx', 'By', 'Bz', 'E1', 'E2', 'E3', 'E4', 'TFG', 'TE', 'Volts']
-    drop_index = columns.copy()
-    drop_index[1] = 'Site'
-    df = pd.read_csv(filename, delimiter='\t', 
-                        names=columns, 
-                        skiprows=1, parse_dates=['Date_UTC'], dayfirst=True, index_col=False).replace(99.99999e3, np.nan)
-    df['Site'] = [site_code] * len(df)
+    from pathlib import Path
+    if path_prefix.startswith('https'):
+        url_prefix = path_prefix
+        if isinstance(date, pd.Timestamp):
+            date= date.to_numpy()
+        date = date.astype('datetime64[D]').astype(str).split('-')
+        url = url_prefix + '{}/{}/{}/txt/'.format(*date)
+        filename = site_code + '{}{}{}.txt'.format(*date)
+        with tempfile.TemporaryDirectory(prefix="live_mags_download") as tmpdir:
+            download(f'{url}{filename}', tmpdir +'/'+ filename)  # network fetch to local cwd
+            columns = ['Date_UTC', 'Index', 'Bx', 'By', 'Bz', 'E1', 'E2', 'E3', 'E4', 'TFG', 'TE', 'Volts']
+            drop_index = columns.copy()
+            drop_index[1] = 'Site'
+            df = pd.read_csv(tmpdir +'/'+ filename, delimiter='\t', 
+                                names=columns, 
+                                skiprows=1, parse_dates=['Date_UTC'], dayfirst=True, index_col=False).replace(99.99999e3, np.nan)
+            df['Site'] = [site_code] * len(df)
+    else:
+        date = date.astype('datetime64[D]').astype(str).split('-')
+        folder = path_prefix + '{}/{}/{}/txt/'.format(*date)
+        filename = site_code + '{}{}{}.txt'.format(*date)
+        columns = ['Date_UTC', 'Index', 'Bx', 'By', 'Bz', 'E1', 'E2', 'E3', 'E4', 'TFG', 'TE', 'Volts']
 
+        df = pd.read_csv(folder+filename, delimiter='\t',
+                    names=columns,
+                    skiprows=1, parse_dates=['Date_UTC'], dayfirst=True, index_col=False).replace(99.99999e3, np.nan)
+        df['Date_UTC'] = pd.to_datetime(df['Date_UTC'], format='mixed')
+        df['Site'] = [site_code] * len(df)
     return df
 @enforce_types(
     now_time=(pd.Timestamp, np.datetime64, str),
     site_code=str,
+    filter=bool,
+    path_prefix=str,
 )
-def live_k(now_time, site_code, filter=True, **kwargs):
+def live_k(now_time, site_code, filter=True, path_prefix='https://data.magie.ie/', **kwargs):
     """
     Fetch the past 3 days of live data for ``site_code`` and return smoothed K.
 
@@ -1436,17 +1454,20 @@ def live_k(now_time, site_code, filter=True, **kwargs):
     start_time = pd.Timestamp(now_time).floor('1D')-pd.Timedelta(3, 'D')
     end_time = pd.Timestamp(now_time).ceil('1D')
     if filter:
-        df= mag_filter(pd.concat([_get_live(date, site_code)\
+        df= mag_filter(pd.concat([_get_live(date, site_code, path_prefix=path_prefix)\
             for date in np.arange(start_time, end_time, np.timedelta64(1, 'D'))]))
     else:
-        df= pd.concat([_get_live(date, site_code)\
+        df= pd.concat([_get_live(date, site_code, path_prefix=path_prefix)\
             for date in np.arange(start_time, end_time, np.timedelta64(1, 'D'))])
-    
+    # return df
     # Trim to requested window and run provisional + smoothed K
     df= df.loc[(df.Date_UTC>=start_time)&(df.Date_UTC<=end_time)]
+    # return df
     df_k= provisional_k(df, site_code=site_code, **kwargs)
+    # return df_k
     df=smooth_kindex(df, df_k, site_code=site_code,  **kwargs)
-    return df.loc[(df.index>=start_time.floor('1D')+pd.Timedelta(1, 'D'))&(df.index<=end_time)]
+    return df.loc[(df.index>=start_time.floor('1D'))&(df.index<=end_time)]
+#%%
 @enforce_types(
     K_data=pd.DataFrame,
 )
@@ -1471,16 +1492,19 @@ def plot_k(K_data):
     >>> fig, ax, cax = plot_K(df)
     """
     import matplotlib.pyplot as plt
+    import matplotlib.image as mpimg
+
     K_data = K_data.copy()  # avoid mutating caller data
-    K_data["K_index"] = K_data["K_index"].replace(0, 0.2)  # lift zeros for visibility
+    # K_data["K_index"] = K_data["K_index"].replace(0, 0.2)  # lift zeros for visibility
     fig= plt.figure(figsize=(30, 15))
-    gs= fig.add_gridspec(2, 1, height_ratios=[1, .1], hspace=0.1)
+    gs= fig.add_gridspec(2, 1, height_ratios=[1, .1], hspace=0.2)
     ax= fig.add_subplot(gs[0, 0])
     cax= fig.add_subplot(gs[1, 0])
 
     import numpy as np
     import matplotlib.pyplot as plt
     from matplotlib.colors import ListedColormap, BoundaryNorm
+    from matplotlib.offsetbox import OffsetImage, AnnotationBbox
 
     # 1. Define the colours for each category (Quiet -> Severe Storm)
 
@@ -1500,8 +1524,20 @@ def plot_k(K_data):
         K_data.set_index('Date_UTC', inplace=True)
 
     # Three-hour bars colored by category
-    ax.bar(K_data.index, K_data.K_index, edgecolor='black', width=np.timedelta64(3, 'h'),
-           color=K_cmap(norm(K_data.K_index)), align='edge')
+    bars= ax.bar(K_data.index, K_data.K_index, edgecolor='black', width=np.timedelta64(3, 'h'),
+           color=K_cmap(norm(K_data.K_index)), align='edge', lw=2, zorder=4)
+    for bar in bars:
+        x = bar.get_x()
+        w = bar.get_width()
+        y = bar.get_height()
+        ax.hlines(
+            y,
+            x,
+            x + w,
+            colors=bar.get_facecolor(),
+            linewidth=5,
+            zorder=3
+        )
     cbar=fig.colorbar(plt.cm.ScalarMappable(norm=norm, cmap=K_cmap), cax=cax, orientation='horizontal',
                 # ticks=[1, 3, 4.5, 5.5, 7, 9.0],
                 )
@@ -1512,21 +1548,61 @@ def plot_k(K_data):
     for x, t in zip([1, 3, 4.5, 5.5, 7, 9.0], ['Quiet\n0-1', 'Unsettled\n2-3', 'Active\n4', 'Minor Storm\n5', 'Major Storm\n6-7', 'Severe Storm\n8-9']):
         cax.text(x, .5, t, fontsize=20, verticalalignment='center', ha='center', bbox=dict(facecolor='white', alpha=0.5))
     import matplotlib.dates as mdates
-    # --- Major ticks every day ---
-    ax.xaxis.set_major_locator(mdates.DayLocator())
-    ax.xaxis.set_major_formatter(mdates.DateFormatter('%Y-%m-%d'))  # or '%d %b'
+    # # --- Major ticks every day ---
+    # ax.xaxis.set_major_locator(mdates.DayLocator())
+    # ax.xaxis.set_major_formatter(mdates.DateFormatter('%Y-%m-%d'))  # or '%d %b'
 
-    # --- Minor ticks every 3 hours ---
-    ax.xaxis.set_minor_locator(mdates.HourLocator(interval=3))
+    # # --- Minor ticks every 3 hours ---
+    # ax.xaxis.set_minor_locator(mdates.HourLocator(interval=3))
+
+    # --- Major ticks: days ---
+    ax.xaxis.set_major_locator(mdates.DayLocator())
+    ax.xaxis.set_major_formatter(mdates.DateFormatter('%H:%M\n%d-%b-%Y'))
+
+    # --- Minor ticks: hours ---
+    ax.xaxis.set_minor_locator(mdates.HourLocator(byhour=[0, 6, 12, 18]))
+    ax.xaxis.set_minor_formatter(mdates.DateFormatter('%H:%M'))
+
+    # Styling
+    ax.tick_params(axis='x', which='major', labelsize=25)
+    ax.tick_params(axis='y', which='major', labelsize=25)
+
+    ax.tick_params(axis='x', which='minor', labelsize=25)
     # ax.minorticks_on(axis='x')
     ax.spines[['top', 'right']].set_visible(False)
     ax.set_xlim(K_data.index.values.astype('datetime64[D]').min(), K_data.index.values.astype('datetime64[D]').max()+np.timedelta64(1, 'D'))
-    return fig, ax, cax
+    ax.set_ylim(-.05, 9.2)
+    logo = mpimg.imread("../MagIE-logo.png")
+    logo[..., :3] = 1.0 - logo[..., :3]  # invert RGB, keep alpha
+    imagebox = OffsetImage(logo, zoom=0.3)
+    ab = AnnotationBbox(
+        imagebox,
+        (0.78, 0.6),            # bottom-right in figure coords
+        xycoords="figure fraction",
+        frameon=False,
+        box_alignment=(1, 0),
+    )
+    logo= fig.add_artist(ab)
 
+    return fig, ax, cax
+#%%
 @enforce_types(
     K_data=pd.DataFrame,
 )
 def plot_k_plotly(K_data: pd.DataFrame):
+    """
+    Plot K-index values as interactive 3-hour bars using Plotly.
+
+    Parameters
+    ----------
+    K_data : pandas.DataFrame
+        Table containing K-index values and their timestamps.
+
+    Returns
+    -------
+    plotly.graph_objects.Figure
+        Interactive Plotly figure for the supplied K-index series.
+    """
 
     def add_3hour_gridlines(fig, start, end):
         """
