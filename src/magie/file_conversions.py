@@ -1,5 +1,6 @@
 import pandas as pd
 import numpy as np
+from collections.abc import Callable
 from magie.utils import enforce_types, get_site_metadata
 
 
@@ -140,6 +141,8 @@ def _format_iaga_component(value, missing_value=999999.00):
 )
 def _format_iaga_component_series(values, missing_value=999999.00):
     """Format a component column using the IAGA-2002 F9.2 layout."""
+    if not isinstance(values, pd.Series):
+        values = pd.Series(values)
     return values.fillna(missing_value).map("{:9.2f}".format)
 
 
@@ -286,7 +289,8 @@ def magie2magie_legacy(file):
     data_interval_type=(str, type(None)),
     data_type=str,
     publication_date=(str, type(None)),
-    sampling_step_seconds=(int, float, type(None)),
+    comments=(list, tuple, type(None)),
+    sampling_step_seconds=(int, float, np.number, type(None)),
 )
 def magie2iaga2002(
     file,
@@ -459,7 +463,21 @@ def magie2iaga2002(
     filename = _iaga_filename(code, file["Date_UTC"].iloc[0], data_type, interval_extension)
     return "\n".join(lines) + "\n", filename
 
+@enforce_types(filename=str)
 def magie_legacy2magie(filename):
+    """
+    Load a legacy MagIE text export into the standard MagIE DataFrame schema.
+
+    Parameters
+    ----------
+    filename : str
+        Path to a tab-delimited legacy MagIE text file.
+
+    Returns
+    -------
+    pandas.DataFrame
+        Standardised MagIE data with ``Date_UTC`` and ``Site`` columns.
+    """
     columns = ['Date_UTC', 'Index', 'Bx', 'By', 'Bz', 'E1', 'E2', 'E3', 'E4', 'TFG', 'TE', 'Volts']
     site= filename.split('/')[-1].split('.')[0][:3]
     drop_index = columns.copy()
@@ -479,12 +497,38 @@ def magie_legacy2magie(filename):
     file['Date_UTC'] = pd.to_datetime(file['Date_UTC'], utc=True).dt.floor('s')
     return file[drop_index]
 
+@enforce_types(filename=str)
 def magie_legacy2iaga2002(filename):
+    """
+    Convert a legacy MagIE text export directly to IAGA-2002 content.
+
+    Parameters
+    ----------
+    filename : str
+        Path to a legacy MagIE text file.
+
+    Returns
+    -------
+    tuple[str, str]
+        IAGA-2002 file contents and the recommended output filename.
+    """
     file = magie_legacy2magie(filename)
     return magie2iaga2002(file)
 
 
+@enforce_types(file=str, output_dir_builder=Callable)
 def save_iaga2002_file(file, output_dir_builder=lambda date: 'magnetometer_archive/{}/{}/{}/iaga2002/'.format(*date)):
+    """
+    Convert one legacy MagIE file and write the IAGA-2002 output to disk.
+
+    Parameters
+    ----------
+    file : str
+        Path to the source legacy MagIE text file.
+    output_dir_builder : collections.abc.Callable, optional
+        Function taking a ``(year, month, day)`` tuple and returning the
+        destination directory path.
+    """
     from pathlib import Path
     date = file.split('/')[-1][-12:-8], file.split('/')[-1][-8:-6], file.split('/')[-1][-6:-4]
 
@@ -494,12 +538,34 @@ def save_iaga2002_file(file, output_dir_builder=lambda date: 'magnetometer_archi
     with open(output_dir + filename, 'w') as f:
         f.write(data)
 
+@enforce_types(
+    archive_path_builder=Callable,
+    output_dir_builder=Callable,
+    parallel_jobs=int,
+    show_progress=bool,
+)
 def convert_magie_to_iaga_archive(
     archive_path_builder=lambda date: 'magnetometer_archive/{}/{}/{}/txt/'.format(*date),
     output_dir_builder=lambda date: 'magnetometer_archive/{}/{}/{}/iaga2002/'.format(*date),
     parallel_jobs=12,
     show_progress=True,
 ):
+    """
+    Convert a legacy MagIE archive tree into an IAGA-2002 archive tree.
+
+    Parameters
+    ----------
+    archive_path_builder : collections.abc.Callable, optional
+        Function taking a ``(year, month, day)``-style string token and
+        returning the source directory path pattern.
+    output_dir_builder : collections.abc.Callable, optional
+        Function taking a ``(year, month, day)`` tuple and returning the
+        destination directory path.
+    parallel_jobs : int, optional
+        Number of parallel worker processes to use.
+    show_progress : bool, optional
+        Whether to display a ``tqdm`` progress bar during conversion.
+    """
     from contextlib import contextmanager
     from glob import glob
     import joblib
