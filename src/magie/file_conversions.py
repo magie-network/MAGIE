@@ -3,16 +3,19 @@ import numpy as np
 from magie.utils import enforce_types, get_site_metadata
 
 
+@enforce_types(label=str, value=(str, int, float, np.number, type(None)))
 def _iaga_header_record(label, value):
     """Build a 70-character IAGA-2002 header record."""
     return f"{f' {label:<23}{value}'[:69]:<69}|"
 
 
+@enforce_types(comment=str)
 def _iaga_comment_record(comment):
     """Build a 70-character IAGA-2002 comment record."""
     return f"{f' #{comment}'[:69]:<69}|"
 
 
+@enforce_types(value=(str, int, float, np.number, type(None)), precision=int)
 def _normalise_iaga_numeric(value, precision=3):
     """Format optional numeric header values for IAGA-2002 headers."""
     if value is None or (isinstance(value, float) and np.isnan(value)):
@@ -22,6 +25,7 @@ def _normalise_iaga_numeric(value, precision=3):
     return f"{value:.{precision}f}"
 
 
+@enforce_types(times=(pd.Series, pd.DatetimeIndex))
 def _infer_iaga_interval_type(times):
     """Infer the IAGA interval label and recommended file extension."""
     step = _infer_iaga_step_seconds(times)
@@ -48,6 +52,7 @@ def _infer_iaga_interval_type(times):
     return f"{step / 86400.0:g}-day", "day"
 
 
+@enforce_types(times=(pd.Series, pd.DatetimeIndex))
 def _infer_iaga_step_seconds(times):
     """Infer the base sampling step in seconds from the smallest positive delta."""
     if len(times) < 2:
@@ -61,6 +66,7 @@ def _infer_iaga_step_seconds(times):
     return float(deltas.min())
 
 
+@enforce_types(file=pd.DataFrame, step_seconds=(int, float, np.number, type(None)))
 def _regularize_iaga_times(file, step_seconds=None):
     """Reindex onto a complete regular time grid so missing timestamps are explicit."""
     if step_seconds is None:
@@ -83,6 +89,7 @@ def _regularize_iaga_times(file, step_seconds=None):
     )
 
 
+@enforce_types(data_type=str)
 def _iaga_type_code(data_type):
     """Map a human-readable IAGA data type to its filename code."""
     normalised = data_type.strip().lower()
@@ -95,6 +102,12 @@ def _iaga_type_code(data_type):
     return "p"
 
 
+@enforce_types(
+    iaga_code=str,
+    start_time=pd.Timestamp,
+    data_type=str,
+    interval_extension=str,
+)
 def _iaga_filename(iaga_code, start_time, data_type, interval_extension):
     """Build a recommended IAGA-2002 filename."""
     code = iaga_code.lower()[:3] if iaga_code else "xxx"
@@ -113,6 +126,7 @@ def _iaga_filename(iaga_code, start_time, data_type, interval_extension):
     return f"{stem}.{interval_extension}"
 
 
+@enforce_types(value=(int, float, np.number, type(None)), missing_value=(int, float, np.number))
 def _format_iaga_component(value, missing_value=999999.00):
     """Format one magnetic component using the IAGA-2002 F9.2 layout."""
     if pd.isna(value):
@@ -120,11 +134,16 @@ def _format_iaga_component(value, missing_value=999999.00):
     return f"{float(value):9.2f}"
 
 
+@enforce_types(
+    values=(pd.Series, np.ndarray, list, tuple),
+    missing_value=(int, float, np.number),
+)
 def _format_iaga_component_series(values, missing_value=999999.00):
     """Format a component column using the IAGA-2002 F9.2 layout."""
     return values.fillna(missing_value).map("{:9.2f}".format)
 
 
+@enforce_types(file=pd.DataFrame)
 def _derived_total_field(file):
     """Return observed total field or derive it from X, Y, Z when needed."""
     if "TFG" in file.columns and file["TFG"].notna().any():
@@ -355,9 +374,26 @@ def magie2iaga2002(
     if geodetic_longitude is None and site_metadata is not None:
         geodetic_longitude = site_metadata["geodetic_longitude"]
 
+    inferred_step_seconds = sampling_step_seconds
+    if inferred_step_seconds is None:
+        inferred_step_seconds = _infer_iaga_step_seconds(file["Date_UTC"])
+
     interval_label, interval_extension = _infer_iaga_interval_type(file["Date_UTC"])
     if digital_sampling is None:
-        digital_sampling = "1 second" if interval_extension == "sec" else interval_label.split(" ", 1)[0]
+        if inferred_step_seconds is None:
+            digital_sampling = interval_label.split(" ", 1)[0]
+        elif np.isclose(inferred_step_seconds, 1.0):
+            digital_sampling = "1 second"
+        elif inferred_step_seconds < 1.0:
+            digital_sampling = f"{int(round(inferred_step_seconds * 1000))} millisecond"
+        elif inferred_step_seconds < 60.0:
+            digital_sampling = f"{inferred_step_seconds:g} second"
+        elif inferred_step_seconds < 3600.0:
+            digital_sampling = f"{(inferred_step_seconds / 60.0):g} minute"
+        elif inferred_step_seconds < 86400.0:
+            digital_sampling = f"{(inferred_step_seconds / 3600.0):g} hour"
+        else:
+            digital_sampling = f"{(inferred_step_seconds / 86400.0):g} day"
     if data_interval_type is None:
         data_interval_type = interval_label
 
@@ -422,3 +458,77 @@ def magie2iaga2002(
 
     filename = _iaga_filename(code, file["Date_UTC"].iloc[0], data_type, interval_extension)
     return "\n".join(lines) + "\n", filename
+
+def magie_legacy2magie(filename):
+    columns = ['Date_UTC', 'Index', 'Bx', 'By', 'Bz', 'E1', 'E2', 'E3', 'E4', 'TFG', 'TE', 'Volts']
+    site= filename.split('/')[-1].split('.')[0][:3]
+    drop_index = columns.copy()
+    drop_index[1] = 'Site'
+    file = pd.read_csv(
+            filename,
+            delimiter='\t',
+            names=columns,
+            skiprows=1,
+            parse_dates=['Date_UTC'],
+            dayfirst=True,
+            index_col=False
+        ).replace(99.99999e3, np.nan)
+    file['Site'] = [site] * len(file)
+
+    # Ensure timestamps are UTC-aware and second-precision
+    file['Date_UTC'] = pd.to_datetime(file['Date_UTC'], utc=True).dt.floor('s')
+    return file[drop_index]
+
+def magie_legacy2iaga2002(filename):
+    file = magie_legacy2magie(filename)
+    return magie2iaga2002(file)
+
+
+def save_iaga2002_file(file, output_dir_builder=lambda date: 'magnetometer_archive/{}/{}/{}/iaga2002/'.format(*date)):
+    from pathlib import Path
+    date = file.split('/')[-1][-12:-8], file.split('/')[-1][-8:-6], file.split('/')[-1][-6:-4]
+
+    output_dir = output_dir_builder(date)
+    Path(output_dir).mkdir(parents=True, exist_ok=True)
+    data, filename = magie_legacy2iaga2002(file)
+    with open(output_dir + filename, 'w') as f:
+        f.write(data)
+
+def convert_magie_to_iaga_archive(
+    archive_path_builder=lambda date: 'magnetometer_archive/{}/{}/{}/txt/'.format(*date),
+    output_dir_builder=lambda date: 'magnetometer_archive/{}/{}/{}/iaga2002/'.format(*date),
+    parallel_jobs=12,
+    show_progress=True,
+):
+    from contextlib import contextmanager
+    from glob import glob
+    import joblib
+    from tqdm import tqdm
+    from joblib import Parallel, delayed
+
+    files = glob(archive_path_builder('*' * 3) + '*.txt')
+
+    @contextmanager
+    def tqdm_joblib(total):
+        class TqdmBatchCompletionCallback(joblib.parallel.BatchCompletionCallBack):
+            def __call__(self, *args, **kwargs):
+                progress_bar.update(n=self.batch_size)
+                return super().__call__(*args, **kwargs)
+
+        if not show_progress:
+            yield
+            return
+
+        progress_bar = tqdm(total=total, desc="Converting to IAGA-2002", unit="file")
+        original_callback = joblib.parallel.BatchCompletionCallBack
+        joblib.parallel.BatchCompletionCallBack = TqdmBatchCompletionCallback
+        try:
+            yield
+        finally:
+            joblib.parallel.BatchCompletionCallBack = original_callback
+            progress_bar.close()
+
+    with tqdm_joblib(len(files)):
+        Parallel(n_jobs=parallel_jobs, prefer='processes', backend="loky")(
+            delayed(save_iaga2002_file)(file, output_dir_builder) for file in files
+        )
