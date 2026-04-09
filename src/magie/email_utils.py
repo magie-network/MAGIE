@@ -18,20 +18,23 @@ def load_email_config(path: str | Path) -> dict:
     smtp = cfg["smtp"]
     email = cfg["email"]
 
-    # password = os.getenv(smtp["password_env"])
-    password = smtp['password']
-    if not password:
-        raise RuntimeError(
-            f"Environment variable {smtp['password_env']} is not set"
-        )
+    use_starttls = bool(smtp.get("use_starttls", True))
+    username = smtp.get("username", "") or ""
+    password = smtp.get("password", "") or ""
+
+    # Only require password if we’re actually authenticating
+    if username and not password:
+        raise RuntimeError("SMTP username provided but password is empty")
 
     return {
         "smtp_host": smtp["host"],
         "smtp_port": int(smtp["port"]),
-        "username": smtp["username"],
+        "username": username,
         "password": password,
+        "use_starttls": use_starttls,
         "from_addr": email["from"],
     }
+
 
 
 def load_recipients(path: str | Path) -> list[str]:
@@ -47,8 +50,8 @@ def load_recipients(path: str | Path) -> list[str]:
 def send_html_email(
     smtp_host: str,
     smtp_port: int,
-    username: str,
-    password: str,
+    username: str | None,
+    password: str | None,
     from_addr: str,
     to_addrs: list[str],
     subject: str,
@@ -56,16 +59,45 @@ def send_html_email(
     html_content: str | None = None,
     inline_images: dict[str, str] | None = None,
     attachments: list[str] | None = None,
-
+    use_starttls: bool = True,
+    starttls_context=None,  # optional ssl.SSLContext
+    timeout: float = 30.0,
 ):
+    """
+    Send an HTML email with optional inline images (CID) and attachments.
+
+    Supports two modes:
+      - Local relay (no auth, no TLS): use_starttls=False, username/password empty
+      - Authenticated submission (STARTTLS + AUTH): use_starttls=True, username/password set
+
+    Args:
+      smtp_host/smtp_port: SMTP server
+      username/password: optional; if provided, AUTH is attempted
+      use_starttls: if True, attempt STARTTLS (and require it to be available)
+      starttls_context: optional ssl.SSLContext passed to starttls()
+      timeout: socket timeout in seconds
+    """
+    import smtplib
+    from email.message import EmailMessage
+    from pathlib import Path
+    import mimetypes
+
     if not to_addrs:
         raise ValueError("Recipient list is empty")
 
+    # Normalize credentials
+    username = (username or "").strip()
+    password = (password or "").strip()
+    if (username and not password) or (password and not username):
+        raise ValueError("SMTP username/password must either both be set or both be empty")
+
+    # Load HTML
     if html_content is None:
         if html_path is None:
             raise ValueError("Provide either html_path or html_content")
         html_content = Path(html_path).read_text(encoding="utf-8")
 
+    # Build message
     msg = EmailMessage()
     msg["From"] = from_addr
     msg["To"] = ", ".join(to_addrs)
@@ -82,6 +114,9 @@ def send_html_email(
     if inline_images:
         for cid, path in inline_images.items():
             path = Path(path)
+            if not path.exists():
+                raise FileNotFoundError(f"Inline image not found: {path}")
+
             mime_type, _ = mimetypes.guess_type(path)
             if mime_type is None:
                 mime_type = "application/octet-stream"
@@ -95,9 +130,14 @@ def send_html_email(
                 filename=path.name,
                 disposition="inline",
             )
+
+    # Attachments
     if attachments:
-        for path in attachments:
-            path = Path(path)
+        for apath in attachments:
+            path = Path(apath)
+            if not path.exists():
+                raise FileNotFoundError(f"Attachment not found: {path}")
+
             mime_type, _ = mimetypes.guess_type(path)
             if mime_type is None:
                 mime_type = "application/octet-stream"
@@ -109,11 +149,23 @@ def send_html_email(
                 subtype=subtype,
                 filename=path.name,
             )
+
     # Send
-    with smtplib.SMTP(smtp_host, smtp_port) as server:
-        server.starttls()
-        server.login(username, password)
+    with smtplib.SMTP(smtp_host, smtp_port, timeout=timeout) as server:
+        server.ehlo()
+
+        if use_starttls:
+            # If STARTTLS is requested, require the server to advertise it
+            if not server.has_extn("STARTTLS"):
+                raise RuntimeError(f"Server {smtp_host}:{smtp_port} does not support STARTTLS")
+            server.starttls(context=starttls_context)
+            server.ehlo()
+
+        if username and password:
+            server.login(username, password)
+
         server.send_message(msg)
+
 
 
 def render_html_template(
