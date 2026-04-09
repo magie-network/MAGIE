@@ -14,6 +14,15 @@ SITE_METADATA = {
         "site_code": "dun",
         "geodetic_latitude": 53.38,
         "geodetic_longitude": -6.34,
+        "k9_threshold": 570,
+    },
+    "dunsink EZIE Mag": {
+        "station_name": "Dunsink EZIE Mag",
+        "iaga_code": "DUN",
+        "site_code": "dun",
+        "geodetic_latitude": 53.38,
+        "geodetic_longitude": -6.34,
+        "k9_threshold": 570,
     },
     "valentia": {
         "station_name": "Valentia",
@@ -21,6 +30,7 @@ SITE_METADATA = {
         "site_code": "val",
         "geodetic_latitude": 51.94,
         "geodetic_longitude": -10.24,
+        "k9_threshold": 480,
     },
     "armagh": {
         "station_name": "Armagh",
@@ -28,12 +38,15 @@ SITE_METADATA = {
         "site_code": "arm",
         "geodetic_latitude": 54.34,
         "geodetic_longitude": -6.66,
+        "k9_threshold": 630,
     },
 }
 
 SITE_ALIASES = {
     "dun": "dunsink",
     "dunsink": "dunsink",
+    "dun_eziemag": "dunsink EZIE Mag",
+    "dunsink_eziemag": "dunsink EZIE Mag",
     "val": "valentia",
     "valentia": "valentia",
     "arm": "armagh",
@@ -87,9 +100,6 @@ def get_site_metadata(site, longitude_style="signed"):
         metadata["geodetic_longitude"] = metadata["geodetic_longitude"] % 360
     elif longitude_style != "signed":
         raise ValueError(f"Unknown longitude style: {longitude_style}")
-
-    site_thresholds = _load_site_thresholds()
-    metadata["k9_threshold"] = site_thresholds.get(metadata["site_code"])
     metadata["latitude"] = metadata["geodetic_latitude"]
     metadata["longitude"] = metadata["geodetic_longitude"]
     metadata["site_key"] = site_key
