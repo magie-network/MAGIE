@@ -1,7 +1,7 @@
 import pandas as pd
 import numpy as np
 from collections.abc import Callable
-from magie.utils import enforce_types, get_site_metadata
+from magie.utils import enforce_types, get_site_metadata, tqdm_joblib
 
 
 @enforce_types(label=str, value=(str, int, float, np.number, type(None)))
@@ -478,11 +478,15 @@ def magie_legacy2magie(filename):
     pandas.DataFrame
         Standardised MagIE data with ``Date_UTC`` and ``Site`` columns.
     """
+    from pandas.errors import ParserError
+
     columns = ['Date_UTC', 'Index', 'Bx', 'By', 'Bz', 'E1', 'E2', 'E3', 'E4', 'TFG', 'TE', 'Volts']
     site= filename.split('/')[-1].split('.')[0][:3]
     drop_index = columns.copy()
     drop_index[1] = 'Site'
-    file = pd.read_csv(
+    try:
+        # Try to read the file into a DataFrame
+        file = pd.read_csv(
             filename,
             delimiter='\t',
             names=columns,
@@ -491,11 +495,52 @@ def magie_legacy2magie(filename):
             dayfirst=True,
             index_col=False
         ).replace(99.99999e3, np.nan)
+        file['Site'] = [site] * len(file)
+
+        # Ensure timestamps are UTC-aware and second-precision
+        file['Date_UTC'] = pd.to_datetime(file['Date_UTC'], utc=True).dt.floor('s')
+
+    except ParserError:
+        # Handle ParserError by modifying the file content and re-reading it
+        with open(filename, mode='r') as F:
+            f = F.read()
+        new_f = '\n'.join(f.split('\t\n'))
+        with open(filename, mode='w') as F:
+            F.write(new_f)
+        file = pd.read_csv(
+            filename,
+            delimiter='\t',
+            names=columns,
+            skiprows=1,
+            parse_dates=['Date_UTC'],
+            dayfirst=True,
+            index_col=False
+        ).replace(99.99999e3, np.nan)
+        file['Site'] = [site] * len(file)
+
+        # Ensure timestamps are UTC-aware and second-precision
+        file['Date_UTC'] = pd.to_datetime(file['Date_UTC'], utc=True).dt.floor('s')
+    if not len(file):
+        return
+    # File bug handling when last line of the file contains incomplete data points
+    # Check for object data types and handle them appropriately
+    if 'O' in [file[col].dtype for col in file.columns[:-1]]:
+        file = file.loc[0:len(file)-2]
+        
+        if file['Date_UTC'].dtype == 'O':
+            file['Date_UTC'] = pd.to_datetime(file.Date_UTC, dayfirst=True)
+        
+        for column in columns[2:]:
+            if file[column].dtype == 'O':
+                file[column] = file[column].astype('float64')
+
     file['Site'] = [site] * len(file)
 
     # Ensure timestamps are UTC-aware and second-precision
     file['Date_UTC'] = pd.to_datetime(file['Date_UTC'], utc=True).dt.floor('s')
     return file[drop_index]
+
+
 
 @enforce_types(filename=str)
 def magie_legacy2iaga2002(filename):
@@ -513,8 +558,9 @@ def magie_legacy2iaga2002(filename):
         IAGA-2002 file contents and the recommended output filename.
     """
     file = magie_legacy2magie(filename)
-    return magie2iaga2002(file)
-
+    if not file is None:
+        return magie2iaga2002(file)
+    return None, None
 
 @enforce_types(file=str, output_dir_builder=Callable)
 def save_iaga2002_file(file, output_dir_builder=lambda date: 'magnetometer_archive/{}/{}/{}/iaga2002/'.format(*date)):
@@ -530,25 +576,42 @@ def save_iaga2002_file(file, output_dir_builder=lambda date: 'magnetometer_archi
         destination directory path.
     """
     from pathlib import Path
+    # print(file)
     date = file.split('/')[-1][-12:-8], file.split('/')[-1][-8:-6], file.split('/')[-1][-6:-4]
 
     output_dir = output_dir_builder(date)
     Path(output_dir).mkdir(parents=True, exist_ok=True)
     data, filename = magie_legacy2iaga2002(file)
-    with open(output_dir + filename, 'w') as f:
-        f.write(data)
+    if data is not None and filename is not None:
+        with open(output_dir + filename, 'w') as f:
+            f.write(data)
+
+
+@enforce_types(file=str, output_dir_builder=Callable)
+def _save_iaga2002_file_with_error_capture(
+    file,
+    output_dir_builder=lambda date: 'magnetometer_archive/{}/{}/{}/iaga2002/'.format(*date),
+):
+    """Convert one file, returning structured error details instead of raising."""
+    try:
+        save_iaga2002_file(file, output_dir_builder)
+        return None
+    except Exception as exc:
+        return file, f"{type(exc).__name__}: {exc}"
 
 @enforce_types(
     archive_path_builder=Callable,
     output_dir_builder=Callable,
     parallel_jobs=int,
     show_progress=bool,
+    error_log_path=(str, type(None)),
 )
 def convert_magie_to_iaga_archive(
     archive_path_builder=lambda date: 'magnetometer_archive/{}/{}/{}/txt/'.format(*date),
     output_dir_builder=lambda date: 'magnetometer_archive/{}/{}/{}/iaga2002/'.format(*date),
     parallel_jobs=12,
     show_progress=True,
+    error_log_path="magnetometer_archive/iaga2002_conversion_errors.log",
 ):
     """
     Convert a legacy MagIE archive tree into an IAGA-2002 archive tree.
@@ -565,36 +628,32 @@ def convert_magie_to_iaga_archive(
         Number of parallel worker processes to use.
     show_progress : bool, optional
         Whether to display a ``tqdm`` progress bar during conversion.
+    error_log_path : str or None, optional
+        File path where conversion errors are appended. Set to ``None`` to disable
+        error logging.
     """
-    from contextlib import contextmanager
     from glob import glob
-    import joblib
-    from tqdm import tqdm
+    from pathlib import Path
     from joblib import Parallel, delayed
 
     files = glob(archive_path_builder('*' * 3) + '*.txt')
 
-    @contextmanager
-    def tqdm_joblib(total):
-        class TqdmBatchCompletionCallback(joblib.parallel.BatchCompletionCallBack):
-            def __call__(self, *args, **kwargs):
-                progress_bar.update(n=self.batch_size)
-                return super().__call__(*args, **kwargs)
-
-        if not show_progress:
-            yield
-            return
-
-        progress_bar = tqdm(total=total, desc="Converting to IAGA-2002", unit="file")
-        original_callback = joblib.parallel.BatchCompletionCallBack
-        joblib.parallel.BatchCompletionCallBack = TqdmBatchCompletionCallback
-        try:
-            yield
-        finally:
-            joblib.parallel.BatchCompletionCallBack = original_callback
-            progress_bar.close()
-
-    with tqdm_joblib(len(files)):
-        Parallel(n_jobs=parallel_jobs, prefer='processes', backend="loky")(
-            delayed(save_iaga2002_file)(file, output_dir_builder) for file in files
+    with tqdm_joblib(
+        total=len(files),
+        desc_prefix="Converting to IAGA-2002",
+        unit="file",
+        enabled=show_progress,
+    ):
+        errors = Parallel(n_jobs=parallel_jobs, prefer='processes', backend="loky")(
+            delayed(_save_iaga2002_file_with_error_capture)(file, output_dir_builder)
+            for file in files
         )
+
+    errors = [error for error in errors if error is not None]
+
+    if error_log_path is not None and errors:
+        error_log = Path(error_log_path)
+        error_log.parent.mkdir(parents=True, exist_ok=True)
+        with error_log.open("a") as log_file:
+            for filename, error_message in errors:
+                log_file.write(f"{filename}\t{error_message}\n")
