@@ -5,6 +5,7 @@ import mimetypes
 from string import Template
 from html import escape
 import os
+from magie.utils import get_asset_bytes
 try:
     import tomllib  # Python 3.11+
 except ModuleNotFoundError:
@@ -35,6 +36,17 @@ def load_email_config(path: str | Path) -> dict:
         "from_addr": email["from"],
     }
 
+def load_mastodon_config(path: str | Path) -> dict:
+    with open(path, "rb") as f:
+        cfg = tomllib.load(f)
+
+    access_token = cfg["access_token"]
+    api_base_url = cfg["api_base_url"]
+
+    return {
+        "access_token": access_token,
+        "api_base_url": api_base_url}
+
 
 
 def load_recipients(path: str | Path) -> list[str]:
@@ -45,6 +57,15 @@ def load_recipients(path: str | Path) -> list[str]:
             continue
         recipients.append(line)
     return recipients
+
+
+def _read_inline_image(source: str | Path) -> tuple[bytes, str]:
+    """Read inline image content from a filesystem path or packaged asset name."""
+    path = Path(source)
+    if path.exists():
+        return path.read_bytes(), path.name
+
+    return get_asset_bytes(path.name), path.name
 
 
 def send_html_email(
@@ -112,22 +133,19 @@ def send_html_email(
 
     # Inline images (CID)
     if inline_images:
-        for cid, path in inline_images.items():
-            path = Path(path)
-            if not path.exists():
-                raise FileNotFoundError(f"Inline image not found: {path}")
-
-            mime_type, _ = mimetypes.guess_type(path)
+        for cid, image_source in inline_images.items():
+            image_bytes, filename = _read_inline_image(image_source)
+            mime_type, _ = mimetypes.guess_type(filename)
             if mime_type is None:
                 mime_type = "application/octet-stream"
             maintype, subtype = mime_type.split("/", 1)
 
             html_part.add_related(
-                path.read_bytes(),
+                image_bytes,
                 maintype=maintype,
                 subtype=subtype,
                 cid=f"<{cid}>",
-                filename=path.name,
+                filename=filename,
                 disposition="inline",
             )
 
@@ -199,8 +217,8 @@ if __name__ =='__main__':
                     ['to_addr1', 'to_addr2'],
                     'MagIE Aurora Alert', '../../email_template.html',
                         inline_images={
-        "magie_logo": "../../logos/MagIE-logo.png",
-        "logo_dias": "../../logos/DIAS.png",
-        "logo_gsi": "../../logos/GSI.png",
-        "logo_met": "../../logos/met_eireann.jpg",
+        "magie_logo": "MagIE-logo.png",
+        "logo_dias": "DIAS.png",
+        "logo_gsi": "GSI.png",
+        "logo_met": "met_eireann.jpg",
     })
