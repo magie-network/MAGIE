@@ -3,6 +3,7 @@ import functools
 import os
 import json
 from contextlib import contextmanager
+from pathlib import Path
 from collections.abc import Callable
 from tqdm import tqdm
 import importlib.resources as importlib_resources
@@ -111,6 +112,48 @@ def _load_site_thresholds():
     except (FileNotFoundError, AttributeError):
         with importlib_resources.open_text(pkg, "site_thresholds.json") as f:
             return json.load(f)
+
+
+@enforce_types(name=str)
+def get_asset_bytes(name):
+    """Return packaged asset bytes, defaulting to ``magie.assets/logos``."""
+    asset_roots = (
+        importlib_resources.files("magie.assets").joinpath("logos"),
+        importlib_resources.files("magie.assets"),
+    )
+    for root in asset_roots:
+        asset = root.joinpath(name)
+        try:
+            return asset.read_bytes()
+        except FileNotFoundError:
+            continue
+    raise FileNotFoundError(f"Packaged asset not found: {name}")
+
+
+@contextmanager
+@enforce_types(name=str)
+def get_asset_path(name):
+    """
+    Yield a filesystem path to a packaged asset, defaulting to ``magie.assets/logos``.
+
+    Use this when a downstream library requires a concrete path rather than
+    file bytes.
+    """
+    asset_roots = (
+        importlib_resources.files("magie.assets").joinpath("logos"),
+        importlib_resources.files("magie.assets"),
+    )
+    for root in asset_roots:
+        asset = root.joinpath(name)
+        try:
+            asset.is_file()
+        except FileNotFoundError:
+            continue
+        if asset.is_file():
+            with importlib_resources.as_file(asset) as asset_path:
+                yield Path(asset_path)
+            return
+    raise FileNotFoundError(f"Packaged asset not found: {name}")
 
 @enforce_types(site=(str, type(None)))
 def normalise_site_name(site):
