@@ -1,4 +1,6 @@
 import numpy as np
+import matplotlib.pyplot as plt
+import matplotlib.cm as cm
 class ArgumentError(Exception):
      pass
 def add_image(ax, url):
