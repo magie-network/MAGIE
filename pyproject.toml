@@ -34,7 +34,7 @@ dependencies = [
 test = [
   "pytest>=8.3.0",
 ]
-alerts = ["mastodon>=2.2.1"
+alerts = ["mastodon.py>=2.1.4"
 ]
 [project.urls]
 homepage = "https://github.com/magie-network/MAGIE"
