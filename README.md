@@ -20,9 +20,15 @@ conda env create -f ./binder/environment.yml
 
 conda activate magie
 
+This creates a development environment with the required dependencies but
+does not install the `magie` package itself. For local development after
+cloning the repository, install the package manually if needed, for example:
+
+pip install -e .
+
 For alert posting support, use the alerts environment instead:
 
-conda env create -f ./binder/environment-alerts.yml
+conda env create -f ./binder/environment_alerts.yml
 
 conda activate magie-alerts
 
