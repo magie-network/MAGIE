@@ -1,9 +1,32 @@
 import numpy as np
 import matplotlib.pyplot as plt
 import matplotlib.cm as cm
+from collections.abc import Callable
+
+from magie.utils import enforce_types
+
+
 class ArgumentError(Exception):
-     pass
+    """Error raised when plotting helper arguments are invalid."""
+
+
+@enforce_types(ax=object, url=str)
 def add_image(ax, url):
+    """
+    Download an image and attach it to a Matplotlib axis as an annotation artist.
+
+    Parameters
+    ----------
+    ax : object
+        Matplotlib axis that will receive the image artist.
+    url : str
+        URL of the image to download.
+
+    Returns
+    -------
+    object
+        Artist returned by ``ax.add_artist()``.
+    """
     from io import BytesIO
     from urllib.request import urlopen
     from PIL import Image
@@ -18,10 +41,27 @@ def add_image(ax, url):
     imagebox = OffsetImage(arr, zoom=0.3)
     ab = AnnotationBbox(imagebox, (0.5, 0), frameon=False)  # attach at data coords
     return ax.add_artist(ab)
+
+
+@enforce_types(val=(int, float, np.ndarray, list, tuple, np.number), norm=object, cmap=(str, object))
 def get_color(val, norm, cmap):
     """
-    Return an RGBA tuple (r,g,b,a) for scalar `val` or an (N,4) array for array-like.
-    NaNs become fully transparent.
+    Return RGBA color values for scalar or array-like data.
+
+    Parameters
+    ----------
+    val : scalar or array-like
+        Input value or values to map through the colormap.
+    norm : object
+        Matplotlib normalization object.
+    cmap : str or object
+        Colormap name or Matplotlib colormap object.
+
+    Returns
+    -------
+    tuple or numpy.ndarray
+        RGBA tuple for scalar input or an ``(N, 4)`` array for array input.
+        NaNs are converted to fully transparent values.
     """
     cmap_obj = plt.get_cmap(cmap) if isinstance(cmap, str) else cmap
     sm = cm.ScalarMappable(norm=norm, cmap=cmap_obj)
@@ -35,8 +75,26 @@ def get_color(val, norm, cmap):
         nan_mask = np.isnan(arr)
         rgba[nan_mask, :] = (0.0, 0.0, 0.0, 0.0)
     return rgba
+
+
+@enforce_types(ax=object, grid=object, resolution=str, facecolor=str)
 def add_land(ax, grid, resolution='50m', facecolor='darkgreen', **kwargs):
-    """Add land patches to a map axis using coastlines from the grid's projection"""
+    """
+    Add land polygons to a map axis using projected coastlines from a grid object.
+
+    Parameters
+    ----------
+    ax : object
+        Matplotlib axis that will receive the polygon patches.
+    grid : object
+        Grid object providing ``projection.get_projected_coastlines()``.
+    resolution : str, optional
+        Coastline resolution passed to the grid projection.
+    facecolor : str, optional
+        Fill color used for land polygons.
+    **kwargs : dict
+        Additional keyword arguments passed to ``PathPatch``.
+    """
     from matplotlib.path import Path
     from matplotlib.patches import PathPatch
 
@@ -65,8 +123,23 @@ def add_land(ax, grid, resolution='50m', facecolor='darkgreen', **kwargs):
     for p in land_patches:
         ax.add_patch(p)
 
+
+@enforce_types(ax=object, grid=object, facecolor=str)
 def add_ocean(ax, grid, facecolor='#3498db', **kwargs):
-    """Add ocean patch to a map axis covering the entire grid area"""
+    """
+    Add a rectangular ocean background patch covering the full grid extent.
+
+    Parameters
+    ----------
+    ax : object
+        Matplotlib axis that will receive the rectangle patch.
+    grid : object
+        Grid object exposing ``xi_min``, ``xi_max``, ``eta_min``, and ``eta_max``.
+    facecolor : str, optional
+        Fill color used for the ocean patch.
+    **kwargs : dict
+        Additional keyword arguments passed to ``Rectangle``.
+    """
     from matplotlib.patches import Rectangle
 
     plot_kwargs = dict(facecolor=facecolor, edgecolor='none', zorder=-5)
@@ -79,32 +152,46 @@ def add_ocean(ax, grid, facecolor='#3498db', **kwargs):
     ax.add_patch(ocean_patch)
 
 
+@enforce_types(
+    contour=object,
+    xpad=(int, float, type(None)),
+    ypad=(int, float, type(None)),
+    sides=(list, str),
+    rtol=(int, float),
+    fmt=Callable,
+    x_splits=(list, str, type(None)),
+    y_splits=(list, str, type(None)),
+)
 def contour_labels(contour, xpad=None, ypad=None, sides=['left', 'right'], rtol=.1, fmt=lambda x: f'{x}', x_splits=None, y_splits=None, **text_kwargs):
     """
-    function for creating labels for contour lines at the edge of the subplot
+    Create contour labels positioned along the edges of a subplot.
 
     Parameters
     ----------
-    contour : matplotlib.contour
-        matplotlib contour object.
-    xpad : float/int, optional
-        shift the left or right labels. The default is None and uses .15% of absolute max of limits.
-    ypad : float/int, optional
-        shift the bottom or top labels. The default is None and uses .15% of absolute max of limits.
-    sides : list/string, optional
-        sides the labels are for. The default is ['left', 'right'].
-    rtol : int/float, optional
-        Defines how close the line must be to the axes limit for a label to be made. The default is .1, which is 10% of the limit away. Passed to numpy.isclose and atol=0.
-    fmt : definition, optional
-        format for the label string The default is lambda x: f'{x}'.
-    x_splits : list/str, optional
-        Used to define the area where labels should be found. The default is None. This is useful of the contour line intersects the axes limits in more than one place.
-        Can define a string as positive (only look at the postive side of the x axis) or negative. Alternatively string can be provided as e.g. 'x>10' or any string with boolean design where only x is used.
-        If multiple sides will be done to all if x_splits is a list is not provided. Use None to not activate this.
-    y_splits : TYPE, optional
-        Same as x_splits but for the y axis. The default is None.
-    **text_kwargs : dictionary
-        kwargs to be passed to matplotlib.axes.text.
+    contour : object
+        Matplotlib contour set object.
+    xpad : int or float or None, optional
+        Horizontal offset applied to labels on the left or right edges. When
+        omitted, a small fraction of the axis width is used.
+    ypad : int or float or None, optional
+        Vertical offset applied to labels on the top or bottom edges. When
+        omitted, a small fraction of the axis height is used.
+    sides : list or str, optional
+        Plot edges on which labels should be created. Valid values are
+        ``left``, ``right``, ``top``, and ``bottom``.
+    rtol : int or float, optional
+        Relative tolerance passed to ``numpy.isclose`` when detecting
+        intersections with axis limits.
+    fmt : collections.abc.Callable, optional
+        Formatter that converts a contour level to label text.
+    x_splits : list or str or None, optional
+        Optional filters that restrict labels on top or bottom edges to
+        positive, negative, or expression-based x regions.
+    y_splits : list or str or None, optional
+        Optional filters that restrict labels on left or right edges to
+        positive, negative, or expression-based y regions.
+    **text_kwargs : dict
+        Additional keyword arguments passed to ``Axes.text``.
 
     Raises
     ------
@@ -114,7 +201,8 @@ def contour_labels(contour, xpad=None, ypad=None, sides=['left', 'right'], rtol=
     Returns
     -------
     list
-        list of text objects. If more than one side provided then will be a list of lists where the first list is a list of text objects corresponding to the first side provided etc.
+        Created Matplotlib text artists. When multiple sides are requested, the
+        result is a list of per-side text-object lists.
 
     """
     import numpy as np

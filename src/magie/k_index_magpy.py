@@ -1,5 +1,6 @@
 import os
 import re
+import traceback
 from collections.abc import Callable
 from contextlib import redirect_stderr, redirect_stdout
 from glob import glob
@@ -655,6 +656,37 @@ def daily_K(
     return data
 
 
+@enforce_types(
+    exc=BaseException,
+    site_code=str,
+    date=(str, pd.Timestamp, np.datetime64),
+)
+def _build_daily_k_error_record(exc, site_code, date):
+    """Build a structured error record including the traceback origin."""
+    date = pd.Timestamp(date).floor("1D")
+    frames = traceback.extract_tb(exc.__traceback__)
+    origin = frames[-1] if frames else None
+
+    error = {
+        "timestamp": pd.Timestamp.utcnow().isoformat(),
+        "site": site_code,
+        "date": date.strftime("%Y-%m-%d"),
+        "error_type": type(exc).__name__,
+        "message": str(exc),
+        "error_file": origin.filename if origin else "",
+        "error_line": origin.lineno if origin else "",
+        "error_function": origin.name if origin else "",
+    }
+
+    if origin is not None:
+        error["message"] = (
+            f"{error['message']} "
+            f"(at {Path(origin.filename).name}:{origin.lineno} in {origin.name})"
+        )
+
+    return error
+
+
 @enforce_types(error_log_path=(str, Path), errors=list)
 def _append_daily_k_errors(error_log_path, errors):
     """Append captured daily K processing errors to a tab-delimited log file."""
@@ -663,7 +695,7 @@ def _append_daily_k_errors(error_log_path, errors):
     with error_log.open("a", encoding="utf-8") as log_file:
         for error in errors:
             log_file.write(
-                "{timestamp}\t{site}\t{date}\t{error_type}\t{message}\n".format(**error)
+                "{timestamp}\t{site}\t{date}\t{error_type}\t{error_file}\t{error_line}\t{error_function}\t{message}\n".format(**error)
             )
 
 
@@ -742,13 +774,7 @@ def _run_daily_k_for_date_with_error_capture(
         return {
             "date": date,
             "output_file": None,
-            "error": {
-                "timestamp": pd.Timestamp.utcnow().isoformat(),
-                "site": site_code,
-                "date": date.strftime("%Y-%m-%d"),
-                "error_type": type(exc).__name__,
-                "message": str(exc),
-            },
+            "error": _build_daily_k_error_record(exc, site_code=site_code, date=date),
         }
 
 
@@ -848,13 +874,7 @@ def daily_K_full_archive(
                     )
                 )
             except Exception as exc:
-                error = {
-                    "timestamp": pd.Timestamp.utcnow().isoformat(),
-                    "site": site_code,
-                    "date": pd.Timestamp(date).strftime("%Y-%m-%d"),
-                    "error_type": type(exc).__name__,
-                    "message": str(exc),
-                }
+                error = _build_daily_k_error_record(exc, site_code=site_code, date=date)
                 errors.append(error)
                 if error_log_path is not None:
                     _append_daily_k_errors(error_log_path, [error])
@@ -987,13 +1007,7 @@ def daily_K_plots_full_archive(
             return {
                 "date": date,
                 "output_file": None,
-                "error": {
-                    "timestamp": pd.Timestamp.utcnow().isoformat(),
-                    "site": site_code,
-                    "date": date.strftime("%Y-%m-%d"),
-                    "error_type": type(exc).__name__,
-                    "message": str(exc),
-                },
+                "error": _build_daily_k_error_record(exc, site_code=site_code, date=date),
             }
 
     if max_workers == 1:
