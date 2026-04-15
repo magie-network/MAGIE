@@ -314,12 +314,13 @@ def validate_alert_paths(
     mastodon_config=(str, Path, type(None)),
     alert_log_path=str,
     verbose=bool,
+    path_prefix=str,
 )
 def alert(template: str = './email_templates/legacy_template.html',
           email_config: str = './email_config.toml', recipients: str = './recipients.txt',
           png_save_path: str = './magnetometer_live/', sites: list[str] = ['dun', 'val'],
           alert_threshold: int = 6, mastodon_config: str | Path | None = None, alert_log_path: str = "./alert_log.json",
-          verbose: bool = True) -> None:
+          verbose: bool = True, path_prefix: str = 'https://data.magie.ie/') -> None:
     """
     Generate and dispatch legacy geomagnetic alert notifications.
 
@@ -347,6 +348,10 @@ def alert(template: str = './email_templates/legacy_template.html',
         JSON file used to suppress duplicate alerts.
     verbose : bool, optional
         When ``True``, print progress messages when an alert condition is met.
+    path_prefix : str, optional
+        Data source prefix passed to ``live_k``. The default HTTPS prefix
+        downloads archived data, while a local folder prefix reads from local
+        ``YYYY/MM/DD/txt/`` directories instead.
 
     Returns
     -------
@@ -376,7 +381,7 @@ def alert(template: str = './email_templates/legacy_template.html',
         tmpdir = Path(tmpdir)
         Ks = []
         for site in sites:
-            kvals = live_k(now_time, site_code=site)
+            kvals = live_k(now_time, site_code=site, path_prefix=path_prefix)
             fig, ax, _ = plot_k(kvals)
             met = get_site_metadata(site)
             fig.suptitle(f"{met['station_name']} 3-Day Local K Index", fontsize=80)
