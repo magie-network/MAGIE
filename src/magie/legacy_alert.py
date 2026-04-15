@@ -531,8 +531,11 @@ def prune_log_entries(logs: dict[str, int], today: date) -> tuple[dict[str, int]
     return kept_logs, invalid_keys
 
 
-@enforce_types(log_path=(str, Path), today=(date, type(None)))
-def clean_alert_log(log_path: str | Path = './alert_log.json', today: date | None = None) -> int:
+@enforce_types(log_path=(str, Path), today=(date, pd.Timestamp, datetime, str, type(None)))
+def clean_alert_log(
+    log_path: str | Path = './alert_log.json',
+    today: pd.Timestamp | datetime | date | str | None = None,
+) -> int:
     """
     Rewrite the alert log after dropping entries older than two days.
 
@@ -540,8 +543,9 @@ def clean_alert_log(log_path: str | Path = './alert_log.json', today: date | Non
     ----------
     log_path : str or pathlib.Path, optional
         JSON alert log to clean.
-    today : datetime.date or None, optional
-        Reference date for pruning. Defaults to the current local date.
+    today : pandas.Timestamp or datetime.datetime or datetime.date or str or None, optional
+        Reference date for pruning. Defaults to the current local date and is
+        normalized to a pandas timestamp before pruning.
 
     Returns
     -------
@@ -549,9 +553,9 @@ def clean_alert_log(log_path: str | Path = './alert_log.json', today: date | Non
         Number of invalid keys encountered during pruning.
     """
     log_path = Path(log_path)
-    today = today or date.today()
+    today = pd.Timestamp(today or date.today())
     logs = load_log(log_path)
-    pruned_logs, invalid_keys = prune_log_entries(logs, today)
+    pruned_logs, invalid_keys = prune_log_entries(logs, today.date())
 
     log_path.write_text(json.dumps(pruned_logs, sort_keys=True), encoding="utf-8")
 
