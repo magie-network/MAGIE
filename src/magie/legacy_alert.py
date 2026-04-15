@@ -245,6 +245,66 @@ def build_archive_url(dt_utc: pd.Timestamp) -> str:
 
 
 @enforce_types(
+    template=(str, Path),
+    email_config=(str, Path),
+    recipients=(str, Path),
+    png_save_path=(str, Path),
+    alert_log_path=(str, Path),
+    mastodon_config=(str, Path, type(None)),
+)
+def validate_alert_paths(
+    template: str | Path,
+    email_config: str | Path,
+    recipients: str | Path,
+    png_save_path: str | Path,
+    alert_log_path: str | Path,
+    mastodon_config: str | Path | None = None,
+) -> dict[str, Path]:
+    """
+    Validate alert input and output paths.
+
+    Required input files must already exist. Output directories must already
+    exist.
+
+    Returns
+    -------
+    dict[str, pathlib.Path]
+        Normalized paths used by ``alert``.
+    """
+    resolved_paths = {
+        "template": Path(template),
+        "email_config": Path(email_config),
+        "recipients": Path(recipients),
+        "png_save_path": Path(png_save_path),
+        "alert_log_path": Path(alert_log_path),
+    }
+    if mastodon_config is not None:
+        resolved_paths["mastodon_config"] = Path(mastodon_config)
+
+    for name in ("template", "email_config", "recipients"):
+        path = resolved_paths[name]
+        if not path.is_file():
+            raise FileNotFoundError(f"{name} file not found: {path}")
+
+    if mastodon_config is not None and not resolved_paths["mastodon_config"].is_file():
+        raise FileNotFoundError(f"mastodon_config file not found: {resolved_paths['mastodon_config']}")
+
+    png_dir = resolved_paths["png_save_path"]
+    if not png_dir.exists():
+        raise FileNotFoundError(f"png_save_path directory not found: {png_dir}")
+    if not png_dir.is_dir():
+        raise NotADirectoryError(f"png_save_path is not a directory: {png_dir}")
+
+    alert_log_parent = resolved_paths["alert_log_path"].parent
+    if not alert_log_parent.exists():
+        raise FileNotFoundError(f"alert_log_path parent directory not found: {alert_log_parent}")
+    if not alert_log_parent.is_dir():
+        raise NotADirectoryError(f"alert_log_path parent is not a directory: {alert_log_parent}")
+
+    return resolved_paths
+
+
+@enforce_types(
     template=str,
     email_config=str,
     recipients=str,
@@ -289,7 +349,22 @@ def alert(template: str = './email_templates/legacy_template.html',
     None
         This function is called for its side effects.
     """
-    raw_template = Path(template).read_text(encoding="utf-8")
+    paths = validate_alert_paths(
+        template=template,
+        email_config=email_config,
+        recipients=recipients,
+        png_save_path=png_save_path,
+        alert_log_path=alert_log_path,
+        mastodon_config=mastodon_config,
+    )
+    template_path = paths["template"]
+    email_config_path = paths["email_config"]
+    recipients_path = paths["recipients"]
+    png_dir = paths["png_save_path"]
+    alert_log_path = paths["alert_log_path"]
+    mastodon_config_path = paths.get("mastodon_config")
+
+    raw_template = template_path.read_text(encoding="utf-8")
     site_block_template_text = extract_site_block(raw_template)
     site_blocks_rendered: list[str] = []
     now_time= pd.Timestamp.now()
@@ -303,7 +378,7 @@ def alert(template: str = './email_templates/legacy_template.html',
             fig.suptitle(f"{met['station_name']} 3-Day Local K Index", fontsize=80)
 
             ax.set_ylabel('K Index (0-9)', size=30)
-            fig.savefig(png_save_path + f"{site}_kindex.png", dpi=300, bbox_inches='tight')
+            fig.savefig(png_dir / f"{site}_kindex.png", dpi=300, bbox_inches='tight')
 
             kvals = pd.DataFrame({'K_index' : kvals['var1']}, index= kvals['time'])
             kvals = kvals.dropna().iloc[-1]
@@ -343,8 +418,8 @@ def alert(template: str = './email_templates/legacy_template.html',
             html_email = render_html_template(str(stitched_tmp),
                                             {"archive_url": archive_url},
                                             )
-            cfg = load_email_config(email_config)
-            recipients = load_recipients(recipients)
+            cfg = load_email_config(email_config_path)
+            recipients = load_recipients(recipients_path)
             send_html_email(
                 smtp_host=cfg["smtp_host"],
                 smtp_port=cfg["smtp_port"],
@@ -357,15 +432,15 @@ def alert(template: str = './email_templates/legacy_template.html',
                 use_starttls=cfg["use_starttls"],
             )
 
-            if mastodon_config is not None:
+            if mastodon_config_path is not None:
                 from mastodon import Mastodon
                 # Initialize Mastodon client
-                mastodon = Mastodon(**load_mastodon_config(mastodon_config))
+                mastodon = Mastodon(**load_mastodon_config(mastodon_config_path))
 
                 # Paths to your images
                 image_paths = [
-                        png_save_path + "dun_kindex.png",
-                        png_save_path + "val_kindex.png",
+                        png_dir / "dun_kindex.png",
+                        png_dir / "val_kindex.png",
                 ]
 
                 # Upload images
