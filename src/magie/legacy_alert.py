@@ -313,11 +313,13 @@ def validate_alert_paths(
     alert_threshold=int,
     mastodon_config=(str, Path, type(None)),
     alert_log_path=str,
+    verbose=bool,
 )
 def alert(template: str = './email_templates/legacy_template.html',
           email_config: str = './email_config.toml', recipients: str = './recipients.txt',
           png_save_path: str = './magnetometer_live/', sites: list[str] = ['dun', 'val'],
-          alert_threshold: int = 6, mastodon_config = None, alert_log_path: str = "./alert_log.json") -> None:
+          alert_threshold: int = 6, mastodon_config: str | Path | None = None, alert_log_path: str = "./alert_log.json",
+          verbose: bool = True) -> None:
     """
     Generate and dispatch legacy geomagnetic alert notifications.
 
@@ -343,6 +345,8 @@ def alert(template: str = './email_templates/legacy_template.html',
         TOML config for Mastodon posting. When ``None``, no social post is made.
     alert_log_path : str, optional
         JSON file used to suppress duplicate alerts.
+    verbose : bool, optional
+        When ``True``, print progress messages when an alert condition is met.
 
     Returns
     -------
@@ -389,7 +393,8 @@ def alert(template: str = './email_templates/legacy_template.html',
             ):
                 continue
             Ks.append(int(kvals['K_index']))
-            print("Alert condition met, preparing email...")
+            if verbose:
+                print("Alert condition met, preparing email...")
             html_inputs = {}
 
             site_block_tmp = tmpdir / "_site_block.html"
