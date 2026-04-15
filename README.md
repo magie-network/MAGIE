@@ -14,6 +14,8 @@ For alert support with `pip`, install the `alerts` extra:
 
 pip install "magie[alerts] @ git+https://github.com/magie-network/MAGIE.git@0.1.0"
 
+This will install mastodon for mastodon alerts
+
 This package temporarily depends on a GitHub commit of geomagpy
 because the circular import fix is not yet released on PyPI.
 
