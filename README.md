@@ -10,12 +10,21 @@ conda activate magie
 
 pip install "git+https://github.com/magie-network/MAGIE.git@0.1.0"
 
+This package temporarily depends on a GitHub commit of geomagpy
+because the circular import fix is not yet released on PyPI.
+
 ### Build from environment file (not as limited with python version)
 Alternatively:
 
 conda env create -f ./binder/environment.yml
 
 conda activate magie
+
+For alert posting support, use the alerts environment instead:
+
+conda env create -f ./binder/environment-alerts.yml
+
+conda activate magie-alerts
 
 ## Tutorials
 In the notebook folder a set of notebooks can be found to demonstrate how to use the magie package

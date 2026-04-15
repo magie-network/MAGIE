@@ -22,16 +22,23 @@ dependencies = [
   "matplotlib>=3.10.6",
   "tqdm>=4.67.1",
   "tables>=3.10.2",
+  "tomli>=2.0.1",
+  "joblib>=1.2.0",
+  "requests>=2.31.0",
+  # Temporary: upstream fix not yet released on PyPI
+  "geomagpy @ git+https://github.com/geomagpy/magpy.git@c10bfb3a8d03587de4b80ff70d821c4e19aa5066",
+
 ]
 
 [project.optional-dependencies]
 test = [
   "pytest>=8.3.0",
 ]
-
+alerts = ["mastodon>=2.2.1"
+]
 [project.urls]
-homepage = "https://github.com/08walkersj/MAGIE"
-repository = "https://github.com/08walkersj/MAGIE"
+homepage = "https://github.com/magie-network/MAGIE"
+repository = "https://github.com/magie-network/MAGIE"
 
 [tool.setuptools]
 package-dir = {"" = "src"}
@@ -41,4 +48,5 @@ where = ["src"]
 
 [tool.setuptools.package-data]
 magie = ["*.json"]
-
+"magie.assets" = ["*.png", "*.jpg"]
+"magie.assets.logos" = ["*.png", "*.jpg"]
