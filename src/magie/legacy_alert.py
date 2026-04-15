@@ -453,10 +453,6 @@ def alert(template: str = './email_templates/legacy_template.html',
                 # Post status with images
                 status = 'MagIE Geomagnetic Alert: K-'+str(max(Ks))+f' ({classify_storm(max(Ks))})'+' Check out https://magie.ie/data for more information #Alert #Aurora #AuroraBorealis #NorthernLights #MagIE #Ireland #MastoDaoine'
                 mastodon.status_post(status, media_ids=media_ids)
-                print(status)
-
-                print("Posted successfully!")
-
 
 @enforce_types(key=str)
 def extract_entry_date(key: str) -> date:
