@@ -366,6 +366,7 @@ def alert(template: str = './email_templates/legacy_template.html',
         alert_log_path=alert_log_path,
         mastodon_config=mastodon_config,
     )
+    import matplotlib.pyplot as plt  # Imported here to avoid unnecessary dependency for non-alert use cases
     template_path = paths["template"]
     email_config_path = paths["email_config"]
     recipients_path = paths["recipients"]
@@ -388,7 +389,7 @@ def alert(template: str = './email_templates/legacy_template.html',
 
             ax.set_ylabel('K Index (0-9)', size=30)
             fig.savefig(png_dir / f"{site}_kindex.png", dpi=300, bbox_inches='tight')
-
+            plt.close(fig)
             kvals = pd.DataFrame({'K_index' : kvals['var1']}, index= kvals['time'])
             kvals = kvals.dropna().iloc[-1]
             if (
