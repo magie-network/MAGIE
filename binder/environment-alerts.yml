@@ -1,4 +1,4 @@
-name: magie
+name: magie-alerts
 channels:
   - conda-forge
 dependencies:
@@ -21,4 +21,5 @@ dependencies:
   - pip:
       - --no-deps
       - -e .
+      - mastodon>=2.2.1
       - geomagpy @ git+https://github.com/geomagpy/magpy.git@c10bfb3a8d03587de4b80ff70d821c4e19aa5066
