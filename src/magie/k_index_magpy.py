@@ -285,12 +285,14 @@ def _get_live(date, site_code, path_prefix='https://data.magie.ie/'):
         folder = path_prefix + '{}/{}/{}/txt/'.format(*date)
         filename = site_code + '{}{}{}.txt'.format(*date)
         columns = ['Date_UTC', 'Index', 'Bx', 'By', 'Bz', 'E1', 'E2', 'E3', 'E4', 'TFG', 'TE', 'Volts']
-
+        drop_index = columns.copy()
+        drop_index[1] = 'Site'
         df = pd.read_csv(folder+filename, delimiter='\t',
                     names=columns,
                     skiprows=1, parse_dates=['Date_UTC'], dayfirst=True, index_col=False).replace(99.99999e3, np.nan)
         df['Date_UTC'] = pd.to_datetime(df['Date_UTC'], format='mixed')
         df['Site'] = [site_code] * len(df)
+        df = df[drop_index]
         df = pd.concat([pd.DataFrame(columns=df.columns,
                                      data=[[pd.Timestamp(df.Date_UTC.min().to_numpy().astype('datetime64[D]').astype('datetime64[ns]')),
                                             site_code] + [np.nan] * (len(df.columns) - 2)]), df])
