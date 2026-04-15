@@ -2,9 +2,56 @@ import inspect
 import functools
 import os
 import json
+from contextlib import contextmanager
+from pathlib import Path
 from collections.abc import Callable
 from tqdm import tqdm
 import importlib.resources as importlib_resources
+
+def enforce_types(**type_map):
+    """
+    Lightweight runtime argument type checking.
+
+    Usage:
+        @enforce_types(path=str, site_code=str, opts=(dict, type(None)))
+        def func(path, site_code, opts=None, **kwargs):
+            ...
+
+    Each key is the parameter name; each value is either a single type
+    or a tuple of allowed types.
+    """
+    def decorator(func):
+        sig = inspect.signature(func)
+
+        @functools.wraps(func)
+        def wrapper(*args, **kwargs):
+            bound = sig.bind_partial(*args, **kwargs)
+            bound.apply_defaults()
+
+            for name, expected in type_map.items():
+                if name not in bound.arguments:
+                    continue
+
+                value = bound.arguments[name]
+                # Allow None when explicitly included via type(None)
+                if isinstance(expected, tuple):
+                    ok = isinstance(value, expected)
+                    expected_names = ", ".join(t.__name__ for t in expected)
+                else:
+                    ok = isinstance(value, expected)
+                    expected_names = expected.__name__
+
+                if not ok:
+                    raise TypeError(
+                        f"Argument '{name}' to {func.__name__}() must be instance of "
+                        f"{expected_names}, got {type(value).__name__}"
+                    )
+
+            return func(*args, **kwargs)
+
+        return wrapper
+
+    return decorator
 
 
 SITE_METADATA = {
@@ -53,9 +100,10 @@ SITE_ALIASES = {
     "armagh": "armagh",
 }
 
+@enforce_types()
 @functools.lru_cache(maxsize=1)
 def _load_site_thresholds():
-    """Load packaged site K9 thresholds once and cache them."""
+    """Load packaged site K9 thresholds and cache the parsed JSON."""
     pkg = __package__ or "magie"
     try:
         json_path = importlib_resources.files(pkg).joinpath("site_thresholds.json")
@@ -64,9 +112,64 @@ def _load_site_thresholds():
     except (FileNotFoundError, AttributeError):
         with importlib_resources.open_text(pkg, "site_thresholds.json") as f:
             return json.load(f)
-        
+
+
+@enforce_types(name=str)
+def get_asset_bytes(name):
+    """Return packaged asset bytes, defaulting to ``magie.assets/logos``."""
+    asset_roots = (
+        importlib_resources.files("magie.assets").joinpath("logos"),
+        importlib_resources.files("magie.assets"),
+    )
+    for root in asset_roots:
+        asset = root.joinpath(name)
+        try:
+            return asset.read_bytes()
+        except FileNotFoundError:
+            continue
+    raise FileNotFoundError(f"Packaged asset not found: {name}")
+
+
+@contextmanager
+@enforce_types(name=str)
+def get_asset_path(name):
+    """
+    Yield a filesystem path to a packaged asset, defaulting to ``magie.assets/logos``.
+
+    Use this when a downstream library requires a concrete path rather than
+    file bytes.
+    """
+    asset_roots = (
+        importlib_resources.files("magie.assets").joinpath("logos"),
+        importlib_resources.files("magie.assets"),
+    )
+    for root in asset_roots:
+        asset = root.joinpath(name)
+        try:
+            asset.is_file()
+        except FileNotFoundError:
+            continue
+        if asset.is_file():
+            with importlib_resources.as_file(asset) as asset_path:
+                yield Path(asset_path)
+            return
+    raise FileNotFoundError(f"Packaged asset not found: {name}")
+
+@enforce_types(site=(str, type(None)))
 def normalise_site_name(site):
-    """Map a site label such as ``dun_test`` or ``Valentia`` to a known site key."""
+    """
+    Normalise a site label to a canonical site key.
+
+    Parameters
+    ----------
+    site : str or None
+        Raw site label, alias, or derived name such as ``dun_test``.
+
+    Returns
+    -------
+    str or None
+        Canonical site key when recognised, otherwise ``None``.
+    """
     if site is None:
         return None
 
@@ -79,17 +182,27 @@ def normalise_site_name(site):
 
     return SITE_ALIASES.get(label)
 
-
+@enforce_types(site=(str, type(None)), longitude_style=str)
 def get_site_metadata(site, longitude_style="signed"):
     """
     Return known metadata for a site.
 
     Parameters
     ----------
-    site : str
+    site : str or None
         Site label or alias.
     longitude_style : {"signed", "360"}, optional
         Longitude convention for the returned metadata.
+
+    Returns
+    -------
+    dict or None
+        Metadata for the resolved site, or ``None`` when the site is unknown.
+
+    Raises
+    ------
+    ValueError
+        If ``longitude_style`` is not ``"signed"`` or ``"360"``.
     """
     site_key = normalise_site_name(site)
     if site_key is None:
@@ -109,50 +222,38 @@ def get_site_metadata(site, longitude_style="signed"):
 
 
 
-def enforce_types(**type_map):
-    """
-    Lightweight runtime argument type checking.
 
-    Usage:
-        @enforce_types(path=str, site_code=str, opts=(dict, type(None)))
-        def func(path, site_code, opts=None, **kwargs):
-            ...
+@enforce_types(
+    total=(int, type(None)),
+    desc_prefix=str,
+    unit=str,
+    enabled=bool,
+)
+def tqdm_joblib(total=None, desc_prefix="Progress", unit="task", enabled=True):
+    """Patch joblib so completed batches update a tqdm progress bar."""
+    import joblib
 
-    Each key is the parameter name; each value is either a single type
-    or a tuple of allowed types.
-    """
-    def decorator(func):
-        sig = inspect.signature(func)
+    @contextmanager
+    def _tqdm_joblib_context():
+        class TqdmBatchCompletionCallback(joblib.parallel.BatchCompletionCallBack):
+            def __call__(self, *args, **kwargs):
+                progress_bar.update(n=self.batch_size)
+                return super().__call__(*args, **kwargs)
 
-        @functools.wraps(func)
-        def wrapper(*args, **kwargs):
-            bound = sig.bind_partial(*args, **kwargs)
-            bound.apply_defaults()
+        if not enabled:
+            yield
+            return
 
-            for name, expected in type_map.items():
-                if name not in bound.arguments:
-                    continue
+        progress_bar = tqdm(total=total, desc=desc_prefix, unit=unit)
+        original_callback = joblib.parallel.BatchCompletionCallBack
+        joblib.parallel.BatchCompletionCallBack = TqdmBatchCompletionCallback
+        try:
+            yield
+        finally:
+            joblib.parallel.BatchCompletionCallBack = original_callback
+            progress_bar.close()
 
-                value = bound.arguments[name]
-                # Allow None when explicitly included via type(None)
-                if isinstance(expected, tuple):
-                    ok = isinstance(value, expected)
-                    expected_names = ", ".join(t.__name__ for t in expected)
-                else:
-                    ok = isinstance(value, expected)
-                    expected_names = expected.__name__
-
-                if not ok:
-                    raise TypeError(
-                        f"Argument '{name}' to {func.__name__}() must be instance of "
-                        f"{expected_names}, got {type(value).__name__}"
-                    )
-
-            return func(*args, **kwargs)
-
-        return wrapper
-
-    return decorator
+    return _tqdm_joblib_context()
 
 @enforce_types(
     inputstr=str,

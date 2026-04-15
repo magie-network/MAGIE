@@ -1,10 +1,35 @@
-import pandas as pd
-from magie.utils import enforce_types
+import os
+import re
+import traceback
+from collections.abc import Callable
+from contextlib import redirect_stderr, redirect_stdout
+from glob import glob
+from io import StringIO
+from pathlib import Path
+from tempfile import TemporaryDirectory
+
+import matplotlib.image as mpimg
+import matplotlib.pyplot as plt
 import numpy as np
-from magie.file_conversions import (magie2iaga2002, _iaga_header_record,
-                                    _infer_iaga_interval_type, _normalise_iaga_numeric,
-                                    _iaga_comment_record, _format_iaga_component_series, _iaga_filename)
-from magpy.stream import read, DataStream
+import pandas as pd
+from joblib import Parallel, delayed
+from magpy.core import activity as act
+from magpy.stream import DataStream, read
+import matplotlib.dates as mdates
+from matplotlib.colors import BoundaryNorm, ListedColormap
+from matplotlib.offsetbox import AnnotationBbox, OffsetImage
+
+from magie.Data_Download import download
+from magie.file_conversions import (
+    _format_iaga_component_series,
+    _iaga_comment_record,
+    _iaga_filename,
+    _iaga_header_record,
+    _infer_iaga_interval_type,
+    _normalise_iaga_numeric,
+    magie2iaga2002,
+)
+from magie.utils import enforce_types, get_asset_path, get_site_metadata, tqdm_joblib
 
 @enforce_types(
     iaga_text=str,
@@ -51,7 +76,6 @@ def _sampling_step_seconds_from_header(iaga_text):
         Sampling step in seconds parsed from the header, or ``None`` when
         the cadence cannot be inferred.
     """
-    import re
     # Prefer Digital Sampling, then fall back to Data Interval Type
     value = _read_iaga_header_value(iaga_text, "Digital Sampling")
     if not value:
@@ -76,10 +100,6 @@ def _sampling_step_seconds_from_header(iaga_text):
         "day": 86400.0,
     }
     return n * factors[unit]
-
-
-import pandas as pd
-import numpy as np
 
 @enforce_types(
     start_time=(pd.Timestamp, np.datetime64, str),
@@ -134,7 +154,7 @@ def build_empty_iaga_window(
             "H = squareroot(X*X + Y*Y), D = atan2(Y, X), I = atan2(Z, H)",
         ]
 
-    end_time = start_time + pd.Timedelta(days=1)
+    end_time = start_time + pd.Timedelta(days=2)
     times = pd.date_range(
         start=start_time,
         end=end_time - pd.to_timedelta(sampling_step_seconds, unit="s"),
@@ -212,7 +232,7 @@ def build_empty_iaga_window(
     lines.extend(data_lines.str.slice(0, 70).str.pad(70, side="right").tolist())
 
     filename = _iaga_filename(code, file["Date_UTC"].iloc[0], data_type, interval_extension)
-    return "\n".join(lines) + "\n", filename
+    return "\n".join(lines) + "\n", filename[:3]+'_empty'+filename[3:]
 
 @enforce_types(
     date=(pd.Timestamp, np.datetime64, str),
@@ -239,9 +259,6 @@ def _get_live(date, site_code, path_prefix='https://data.magie.ie/'):
     --------
     >>> _get_live(pd.Timestamp('2024-01-02'), 'dun')  # doctest: +SKIP
     """
-    import tempfile
-    from magie.Data_Download import download
-    from pathlib import Path
     if path_prefix.startswith('https'):
         url_prefix = path_prefix
         if isinstance(date, pd.Timestamp):
@@ -249,7 +266,7 @@ def _get_live(date, site_code, path_prefix='https://data.magie.ie/'):
         date = date.astype('datetime64[D]').astype(str).split('-')
         url = url_prefix + '{}/{}/{}/txt/'.format(*date)
         filename = site_code + '{}{}{}.txt'.format(*date)
-        with tempfile.TemporaryDirectory(prefix="live_mags_download") as tmpdir:
+        with TemporaryDirectory(prefix="live_mags_download") as tmpdir:
             download(f'{url}{filename}', tmpdir +'/'+ filename)  # network fetch to local cwd
             columns = ['Date_UTC', 'Index', 'Bx', 'By', 'Bz', 'E1', 'E2', 'E3', 'E4', 'TFG', 'TE', 'Volts']
             drop_index = columns.copy()
@@ -258,21 +275,24 @@ def _get_live(date, site_code, path_prefix='https://data.magie.ie/'):
                                 names=columns, 
                                 skiprows=1, parse_dates=['Date_UTC'], dayfirst=True, index_col=False).replace(99.99999e3, np.nan)
             df['Site'] = [site_code] * len(df)
+            df = df[drop_index]
             df = pd.concat([pd.DataFrame(columns=df.columns,
                                         data=[[pd.Timestamp(df.Date_UTC.min().to_numpy().astype('datetime64[D]').astype('datetime64[ns]')),
                                                 site_code] + [np.nan] * (len(df.columns) - 2)]), df])
-            df= magie2iaga2002(df, 'dun')
+            df= magie2iaga2002(df, site_code)
     else:
         date = date.astype('datetime64[D]').astype(str).split('-')
         folder = path_prefix + '{}/{}/{}/txt/'.format(*date)
         filename = site_code + '{}{}{}.txt'.format(*date)
         columns = ['Date_UTC', 'Index', 'Bx', 'By', 'Bz', 'E1', 'E2', 'E3', 'E4', 'TFG', 'TE', 'Volts']
-
+        drop_index = columns.copy()
+        drop_index[1] = 'Site'
         df = pd.read_csv(folder+filename, delimiter='\t',
                     names=columns,
                     skiprows=1, parse_dates=['Date_UTC'], dayfirst=True, index_col=False).replace(99.99999e3, np.nan)
         df['Date_UTC'] = pd.to_datetime(df['Date_UTC'], format='mixed')
         df['Site'] = [site_code] * len(df)
+        df = df[drop_index]
         df = pd.concat([pd.DataFrame(columns=df.columns,
                                      data=[[pd.Timestamp(df.Date_UTC.min().to_numpy().astype('datetime64[D]').astype('datetime64[ns]')),
                                             site_code] + [np.nan] * (len(df.columns) - 2)]), df])
@@ -306,20 +326,14 @@ def live_k(now_time, site_code, path_prefix='https://data.magie.ie/', site_metad
     --------
     >>> live_k(pd.Timestamp('2024-01-03'), 'dun')  # doctest: +SKIP
     """
-    import tempfile
-    from magie.utils import get_site_metadata
-    from magpy.core import activity as act
-    import os
-
-
     start_time = pd.Timestamp(now_time).floor('1D')-pd.Timedelta(4, 'D')
     end_time = pd.Timestamp(now_time).ceil('1D')
-    with tempfile.TemporaryDirectory(prefix="live_mags_download") as tmpdir:
+    with TemporaryDirectory(prefix="live_mags_download") as tmpdir:
         for date in np.arange(start_time, end_time, np.timedelta64(1, 'D')):
             data, filename=_get_live(date, site_code, path_prefix=path_prefix)
             with open(tmpdir +'/'+ filename, 'w') as file:
                 file.write(data)
-        data, filename= build_empty_iaga_window(end_time,
+        data, filename= build_empty_iaga_window(now_time,
                         iaga_code=site_code, sampling_step_seconds=_sampling_step_seconds_from_header(data))
         with open(f"{tmpdir}/{filename}", 'w') as file:
             file.write(data)
@@ -327,17 +341,15 @@ def live_k(now_time, site_code, path_prefix='https://data.magie.ie/', site_metad
     data= data.filter()
     if site_metadata is None:
         site_metadata= get_site_metadata(site_code)
-
         
     data = act.K_fmi(data, K9_limit=site_metadata['k9_threshold'], longitude=site_metadata['geodetic_longitude'], step_size=60)
-    # data= data.trim(starttime=str(start_time.date()), endtime=str(end_time.date()))
     data['var1']= np.where(data['var1']>=0, data['var1'], np.nan)
-    return data.trim(starttime=(start_time + pd.Timedelta(1, 'D')).to_numpy(), endtime=end_time.to_numpy())
+    return data.trim(starttime=(start_time + pd.Timedelta(45, 'h')).to_numpy(), endtime=(now_time+pd.Timedelta(1, 'D')).floor('1D').to_numpy())
 
 @enforce_types(
-    K_data=DataStream,
+    K_data=(DataStream, pd.DataFrame),
 )
-def plot_k(K_data):
+def plot_k(K_data, logo_path=None, auto_xlim=True):
     """
     Plot K-index values as colored 3-hour bars with a qualitative legend.
 
@@ -345,6 +357,12 @@ def plot_k(K_data):
     ----------
     K_data : pandas.DataFrame
         Must include ``K_index`` and a datetime index or ``Date_UTC`` column.
+    logo_path : str, optional
+        Path to the logo image to be displayed on the plot. When omitted, the
+        packaged ``MagIE-logo.png`` asset is used.
+    auto_xlim : bool, default True
+        Whether to automatically set the x-axis limits.
+
 
     Returns
     -------
@@ -357,20 +375,12 @@ def plot_k(K_data):
     >>> df = pd.DataFrame({'K_index': [1, 2, 3, 4]}, index=idx)
     >>> fig, ax, cax = plot_K(df)
     """
-    import matplotlib.pyplot as plt
-    import matplotlib.image as mpimg
-
     K_data = K_data.copy()  # avoid mutating caller data
     # K_data["K_index"] = K_data["K_index"].replace(0, 0.2)  # lift zeros for visibility
     fig= plt.figure(figsize=(30, 15))
     gs= fig.add_gridspec(2, 1, height_ratios=[1, .1], hspace=0.2)
     ax= fig.add_subplot(gs[0, 0])
     cax= fig.add_subplot(gs[1, 0])
-
-    import numpy as np
-    import matplotlib.pyplot as plt
-    from matplotlib.colors import ListedColormap, BoundaryNorm
-    from matplotlib.offsetbox import OffsetImage, AnnotationBbox
 
     # 1. Define the colours for each category (Quiet -> Severe Storm)
 
@@ -388,7 +398,7 @@ def plot_k(K_data):
     norm = BoundaryNorm(bounds, K_cmap.N)
 
     # Three-hour bars colored by category
-    bars= ax.bar(K_data['time'].astype('datetime64[ns]'), K_data['var1'], edgecolor='black', width=np.timedelta64(3, 'h'),
+    bars= ax.bar(np.array(K_data['time']).astype('datetime64[ns]'), K_data['var1'], edgecolor='black', width=np.timedelta64(3, 'h'),
            color=K_cmap(norm(K_data['var1'])), align='edge', lw=2, zorder=4)
     for bar in bars:
         x = bar.get_x()
@@ -411,7 +421,6 @@ def plot_k(K_data):
     ax.grid(True, which='both', linestyle='--', alpha=1, lw=1)
     for x, t in zip([1, 3, 4.5, 5.5, 7, 9.0], ['Quiet\n0-1', 'Unsettled\n2-3', 'Active\n4', 'Minor Storm\n5', 'Major Storm\n6-7', 'Severe Storm\n8-9']):
         cax.text(x, .5, t, fontsize=20, verticalalignment='center', ha='center', bbox=dict(facecolor='white', alpha=0.5))
-    import matplotlib.dates as mdates
     # # --- Major ticks every day ---
     # ax.xaxis.set_major_locator(mdates.DayLocator())
     # ax.xaxis.set_major_formatter(mdates.DateFormatter('%Y-%m-%d'))  # or '%d %b'
@@ -434,9 +443,14 @@ def plot_k(K_data):
     ax.tick_params(axis='x', which='minor', labelsize=25)
     # ax.minorticks_on(axis='x')
     ax.spines[['top', 'right']].set_visible(False)
-    ax.set_xlim(K_data['time'].astype('datetime64[D]').min(), K_data['time'].astype('datetime64[D]').max()+np.timedelta64(1, 'D'))
+    if auto_xlim :
+        ax.set_xlim(np.array(K_data['time']).astype('datetime64[D]').min()+np.timedelta64(1, 'D'), np.array(K_data['time']).astype('datetime64[D]').max()+np.timedelta64(1, 'D'))
     ax.set_ylim(-.05, 9.2)
-    logo = mpimg.imread("../MagIE-logo.png")
+    if logo_path is None:
+        with get_asset_path("MagIE-logo.png") as default_logo_path:
+            logo = mpimg.imread(default_logo_path)
+    else:
+        logo = mpimg.imread(logo_path)
     logo[..., :3] = 1.0 - logo[..., :3]  # invert RGB, keep alpha
     imagebox = OffsetImage(logo, zoom=0.3)
     ab = AnnotationBbox(
@@ -449,3 +463,582 @@ def plot_k(K_data):
     logo= fig.add_artist(ab)
 
     return fig, ax, cax
+
+@enforce_types(data=DataStream, column=str)
+def _datastream_column_to_array(data, column):
+    """Return a datastream column as a NumPy array, or ``None`` when unavailable."""
+    try:
+        values = data[column]
+    except Exception:
+        return None
+
+    if values is None:
+        return None
+
+    try:
+        array = np.asarray(values)
+    except Exception:
+        return None
+
+    if array.size == 0:
+        return None
+    return array
+
+
+@enforce_types(data=DataStream, site_code=str, time=(str, pd.Timestamp, np.datetime64))
+def _require_valid_k_window(data, site_code, time):
+    """
+    Validate that a datastream contains enough data to compute daily K values.
+
+    Parameters
+    ----------
+    data : DataStream
+        MagPy datastream containing timestamps and magnetic components.
+    site_code : str
+        Site identifier used in validation errors.
+    time : str or pandas.Timestamp or numpy.datetime64
+        Target day to validate.
+
+    Raises
+    ------
+    ValueError
+        If the datastream is missing timestamps, lacks three days of coverage,
+        or has no valid magnetic data for the target day.
+    """
+    day = pd.Timestamp(time).floor("1D")
+
+    times = _datastream_column_to_array(data, "time")
+    if times is None:
+        raise ValueError(
+            f"Missing timestamps for site '{site_code}' on {day.date()}."
+        )
+
+    time_index = pd.to_datetime(times)
+    valid_times = time_index[~pd.isna(time_index)]
+    if len(valid_times) == 0:
+        raise ValueError(
+            f"No valid timestamps found for site '{site_code}' on {day.date()}."
+        )
+
+    distinct_days = pd.Index(valid_times.floor("1D").unique())
+    if len(distinct_days) < 3:
+        raise ValueError(
+            f"Datastream is too short; need three full days for site '{site_code}' "
+            f"on {day.date()}."
+        )
+
+    day_mask = valid_times.floor("1D") == day
+    if not np.any(day_mask):
+        raise ValueError(
+            f"No valid data found for site '{site_code}' on {day.date()}."
+        )
+
+    component_names = ("x", "y", "z", "h", "d", "f")
+    has_valid_component_data = False
+    for column in component_names:
+        values = _datastream_column_to_array(data, column)
+        if values is None or len(values) != len(time_index):
+            continue
+
+        numeric = pd.to_numeric(values, errors="coerce")
+        if np.isfinite(numeric[day_mask]).any():
+            has_valid_component_data = True
+            break
+
+    if not has_valid_component_data:
+        raise ValueError(
+            f"No valid magnetic component data found for site '{site_code}' on {day.date()}."
+        )
+
+
+@enforce_types(
+    time=(str, pd.Timestamp, np.datetime64),
+    site_code=str,
+    archive_path_builder=Callable,
+    site_metadata=(dict, type(None)),
+)
+def daily_K(
+    time,
+    site_code,
+    archive_path_builder=lambda date: "./magnetometer_archive/{}/{}/{}/iaga2002/".format(*date),
+    site_metadata=None,
+):
+    """
+    Compute daily K values for one site and one UTC day.
+
+    Parameters
+    ----------
+    time : str or pandas.Timestamp or numpy.datetime64
+        Day to process.
+    site_code : str
+        Site identifier used in archive filenames and metadata lookup.
+    archive_path_builder : collections.abc.Callable, optional
+        Function that builds an archive directory from ``[YYYY, MM, DD]`` tokens.
+    site_metadata : dict or None, optional
+        Pre-resolved site metadata. When omitted it is looked up from ``site_code``.
+
+    Returns
+    -------
+    object
+        MagPy datastream trimmed to the requested day with computed K values.
+
+    Raises
+    ------
+    FileNotFoundError
+        If the archive does not contain enough daily files.
+    ValueError
+        If the datastream cannot produce valid K values for the requested day.
+    """
+    day = pd.Timestamp(time).floor("1D")
+    start_time = pd.Timestamp(time).floor("1D") - pd.Timedelta(2, "D")
+    end_time = pd.Timestamp(time).ceil("1D") + pd.Timedelta(3, "D")
+    counter = 0
+
+    with TemporaryDirectory() as temp_dir:
+        for date in np.arange(start_time, end_time, pd.Timedelta(1, "D")):
+            date_str = str(date.tolist())[:10].split("-")
+            archive_path = glob(
+                archive_path_builder(date_str) + site_code + "{}{}{}*".format(*date_str)
+            )
+            if len(archive_path) == 0:
+                continue
+
+            counter += 1
+            archive_path = os.path.abspath(archive_path[0])
+            os.symlink(archive_path, os.path.join(temp_dir, os.path.basename(archive_path)))
+
+        if not counter:
+            raise FileNotFoundError(
+                f"No files found for site '{site_code}' in the date range "
+                f"{start_time} to {end_time}."
+            )
+        elif counter < 3:
+            raise FileNotFoundError(
+                f"Datastream is too short; need three full days for site '{site_code}' "
+                f"on {pd.Timestamp(time).floor('1D').date()}."
+            )
+        data = read(temp_dir + "/*")
+
+    data = data.filter()
+    _require_valid_k_window(data, site_code=site_code, time=time)
+    if site_metadata is None:
+        site_metadata = get_site_metadata(site_code)
+
+    k_fmi_stdout = StringIO()
+    k_fmi_stderr = StringIO()
+    with redirect_stdout(k_fmi_stdout), redirect_stderr(k_fmi_stderr):
+        data = act.K_fmi(
+            data,
+            K9_limit=site_metadata["k9_threshold"],
+            longitude=site_metadata["geodetic_longitude"],
+            step_size=60,
+        )
+
+    k_fmi_messages = "\n".join(
+        message.strip()
+        for message in [k_fmi_stdout.getvalue(), k_fmi_stderr.getvalue()]
+        if message.strip()
+    )
+    if k_fmi_messages:
+        raise ValueError(
+            f"K_fmi failed for site '{site_code}' on {day.date()}: {k_fmi_messages}"
+        )
+
+    data["var1"] = data["var1"]
+    data["var1"] = np.where(data["var1"] >= 0, data["var1"], np.nan)
+    data = data.trim(
+        starttime=day.to_numpy(),
+        endtime=day.to_numpy() + np.timedelta64(1, "D"),
+    )
+    if not len(data):
+        raise ValueError(
+            f"No valid K index data found for site '{site_code}' on "
+            f"{day.date()}."
+        )
+    return data
+
+
+@enforce_types(
+    exc=BaseException,
+    site_code=str,
+    date=(str, pd.Timestamp, np.datetime64),
+)
+def _build_daily_k_error_record(exc, site_code, date):
+    """Build a structured error record including the traceback origin."""
+    date = pd.Timestamp(date).floor("1D")
+    frames = traceback.extract_tb(exc.__traceback__)
+    origin = frames[-1] if frames else None
+
+    error = {
+        "timestamp": pd.Timestamp.utcnow().isoformat(),
+        "site": site_code,
+        "date": date.strftime("%Y-%m-%d"),
+        "error_type": type(exc).__name__,
+        "message": str(exc),
+        "error_file": origin.filename if origin else "",
+        "error_line": origin.lineno if origin else "",
+        "error_function": origin.name if origin else "",
+    }
+
+    if origin is not None:
+        error["message"] = (
+            f"{error['message']} "
+            f"(at {Path(origin.filename).name}:{origin.lineno} in {origin.name})"
+        )
+
+    return error
+
+
+@enforce_types(error_log_path=(str, Path), errors=list)
+def _append_daily_k_errors(error_log_path, errors):
+    """Append captured daily K processing errors to a tab-delimited log file."""
+    error_log = Path(error_log_path)
+    error_log.parent.mkdir(parents=True, exist_ok=True)
+    with error_log.open("a", encoding="utf-8") as log_file:
+        for error in errors:
+            log_file.write(
+                "{timestamp}\t{site}\t{date}\t{error_type}\t{error_file}\t{error_line}\t{error_function}\t{message}\n".format(**error)
+            )
+
+
+@enforce_types(output_file=(str, Path))
+def _save_daily_k_csv(kvals, output_file):
+    """Write computed K values to a CSV file with ``time`` and ``K_index`` columns."""
+    df = pd.DataFrame(
+        {
+            "time": pd.to_datetime(kvals["time"]),
+            "K_index": kvals["var1"],
+        }
+    )
+    df.to_csv(output_file, index=False)
+
+
+@enforce_types(
+    date=(str, pd.Timestamp, np.datetime64),
+    site_code=str,
+    archive_path_builder=Callable,
+    output_path_builder=Callable,
+    site_metadata=(dict, type(None)),
+)
+def _run_daily_k_for_date(
+    date,
+    site_code,
+    archive_path_builder,
+    output_path_builder,
+    site_metadata,
+):
+    """Run daily K generation for one day and save the resulting CSV file."""
+    kvals = daily_K(
+        time=date,
+        site_code=site_code,
+        archive_path_builder=archive_path_builder,
+        site_metadata=site_metadata,
+    )
+    date = pd.Timestamp(date).floor("1D")
+    date_tokens = date.strftime("%Y-%m-%d").split("-")
+    output_dir = Path(output_path_builder(date_tokens))
+    output_dir.mkdir(parents=True, exist_ok=True)
+    output_file = output_dir / f"{site_code}{date:%Y%m%d}.csv"
+    _save_daily_k_csv(kvals, output_file)
+    return output_file
+
+
+@enforce_types(
+    date=(str, pd.Timestamp, np.datetime64),
+    site_code=str,
+    archive_path_builder=Callable,
+    output_path_builder=Callable,
+    site_metadata=(dict, type(None)),
+)
+def _run_daily_k_for_date_with_error_capture(
+    date,
+    site_code,
+    archive_path_builder,
+    output_path_builder,
+    site_metadata,
+):
+    """Run daily K generation for one day and return either an output path or a structured error."""
+    date = pd.Timestamp(date).floor("1D")
+    try:
+        output_file = _run_daily_k_for_date(
+            date=date,
+            site_code=site_code,
+            archive_path_builder=archive_path_builder,
+            output_path_builder=output_path_builder,
+            site_metadata=site_metadata,
+        )
+        return {
+            "date": date,
+            "output_file": output_file,
+            "error": None,
+        }
+    except Exception as exc:
+        return {
+            "date": date,
+            "output_file": None,
+            "error": _build_daily_k_error_record(exc, site_code=site_code, date=date),
+        }
+
+
+@enforce_types(
+    site_code=str,
+    archive_path_builder=Callable,
+    output_path_builder=Callable,
+    start=(str, pd.Timestamp, np.datetime64),
+    end=(str, pd.Timestamp, np.datetime64),
+    site_metadata=(dict, type(None)),
+    max_workers=(int, type(None)),
+    error_log_path=(str, Path, type(None)),
+)
+def daily_K_full_archive(
+    site_code,
+    archive_path_builder=lambda date: "./magnetometer_archive/{}/{}/{}/iaga2002/".format(
+        *date
+    ),
+    output_path_builder=lambda date: "./magnetometer_archive/{}/{}/{}/k_index/".format(
+        *date
+    ),
+    start="2025-01-01",
+    end="2026-01-01",
+    site_metadata=None,
+    max_workers=None,
+    error_log_path="live_scripts/daily_k_errors.log",
+):
+    """
+    Compute daily K CSV outputs for every day in a date range.
+
+    Parameters
+    ----------
+    site_code : str
+        Site identifier used for archive lookup and output filenames.
+    archive_path_builder : collections.abc.Callable, optional
+        Function that builds an archive directory from ``[YYYY, MM, DD]`` tokens.
+    output_path_builder : collections.abc.Callable, optional
+        Function that builds an output directory from ``[YYYY, MM, DD]`` tokens.
+    start : str or pandas.Timestamp or numpy.datetime64, optional
+        Inclusive start date.
+    end : str or pandas.Timestamp or numpy.datetime64, optional
+        Exclusive end date.
+    site_metadata : dict or None, optional
+        Pre-resolved site metadata. When omitted it is looked up from ``site_code``.
+    max_workers : int or None, optional
+        Number of parallel workers. ``None`` picks a bounded default.
+    error_log_path : str or pathlib.Path or None, optional
+        File that receives one line per failed day. ``None`` disables logging.
+
+    Returns
+    -------
+    tuple[list, list]
+        Successful outputs as ``(date, output_file)`` pairs and captured errors.
+
+    Raises
+    ------
+    ValueError
+        If ``end`` is not later than ``start``.
+    """
+    start = pd.Timestamp(start).floor("1D")
+    end = pd.Timestamp(end).floor("1D")
+    if end <= start:
+        raise ValueError("'end' must be later than 'start'.")
+
+    if site_metadata is None:
+        site_metadata = get_site_metadata(site_code)
+
+    dates = pd.date_range(start=start, end=end - pd.Timedelta(days=1), freq="1D")
+    if len(dates) == 0:
+        return [], []
+
+    if error_log_path is not None:
+        error_log = Path(error_log_path)
+        error_log.parent.mkdir(parents=True, exist_ok=True)
+
+    if max_workers is None:
+        max_workers = min(32, len(dates), max(1, os.cpu_count() or 1))
+    else:
+        max_workers = max(1, min(int(max_workers), len(dates)))
+
+    results = []
+    errors = []
+
+    if max_workers == 1:
+        for date in dates:
+            try:
+                results.append(
+                    (
+                        pd.Timestamp(date),
+                        _run_daily_k_for_date(
+                            date=date,
+                            site_code=site_code,
+                            archive_path_builder=archive_path_builder,
+                            output_path_builder=output_path_builder,
+                            site_metadata=site_metadata,
+                        ),
+                    )
+                )
+            except Exception as exc:
+                error = _build_daily_k_error_record(exc, site_code=site_code, date=date)
+                errors.append(error)
+                if error_log_path is not None:
+                    _append_daily_k_errors(error_log_path, [error])
+    else:
+        with tqdm_joblib(
+            total=len(dates),
+            desc_prefix=f"Computing daily K for {site_code}",
+            unit="day",
+        ):
+            job_results = Parallel(n_jobs=max_workers, prefer='processes', backend="loky")(
+                delayed(_run_daily_k_for_date_with_error_capture)(
+                    date,
+                    site_code,
+                    archive_path_builder,
+                    output_path_builder,
+                    site_metadata,
+                )
+                for date in dates
+            )
+
+        for job_result in job_results:
+            if job_result["error"] is None:
+                results.append((job_result["date"], job_result["output_file"]))
+            else:
+                errors.append(job_result["error"])
+                if error_log_path is not None:
+                    _append_daily_k_errors(error_log_path, [job_result["error"]])
+
+    results.sort(key=lambda item: item[0])
+    errors.sort(key=lambda item: item["date"])
+
+    return results, errors
+def daily_K_plots_full_archive(
+    site_code,
+    archive_path_builder=lambda date: "./magnetometer_archive/{}/{}/{}/k_index/".format(
+        *date
+    ),
+    output_path_builder=lambda date: "./magnetometer_archive/{}/{}/{}/png/".format(
+        *date
+    ),
+    start="2025-01-01",
+    end="2026-01-01",
+    site_metadata=None,
+    max_workers=None,
+    error_log_path="live_scripts/daily_k_plot_errors.log",
+    logo_path=None,
+):
+    """
+    Save daily K plots for every day in a date range.
+
+    Parameters
+    ----------
+    site_code : str
+        Site identifier used for archive lookup and output filenames.
+    archive_path_builder : collections.abc.Callable, optional
+        Function that builds an archive directory from ``[YYYY, MM, DD]`` tokens.
+    output_path_builder : collections.abc.Callable, optional
+        Function that builds an output directory from ``[YYYY, MM, DD]`` tokens.
+    start : str or pandas.Timestamp or numpy.datetime64, optional
+        Inclusive start date.
+    end : str or pandas.Timestamp or numpy.datetime64, optional
+        Exclusive end date.
+    site_metadata : dict or None, optional
+        Pre-resolved site metadata. When omitted it is looked up from ``site_code``.
+    max_workers : int or None, optional
+        Number of parallel workers. ``None`` picks a bounded default.
+    error_log_path : str or pathlib.Path or None, optional
+        File that receives one line per failed day. ``None`` disables logging.
+
+    Returns
+    -------
+    tuple[list, list]
+        Successful outputs as ``(date, output_file)`` pairs and captured errors.
+
+    Raises
+    ------
+    ValueError
+        If ``end`` is not later than ``start``.
+    """
+    start = pd.Timestamp(start).floor("1D")
+    end = pd.Timestamp(end).floor("1D")
+    if end <= start:
+        raise ValueError("'end' must be later than 'start'.")
+
+    if site_metadata is None:
+        site_metadata = get_site_metadata(site_code)
+
+    dates = pd.date_range(start=start, end=end - pd.Timedelta(days=1), freq="1D")
+    if len(dates) == 0:
+        return [], []
+
+    if error_log_path is not None:
+        error_log = Path(error_log_path)
+        error_log.parent.mkdir(parents=True, exist_ok=True)
+
+    if max_workers is None:
+        max_workers = min(32, len(dates), max(1, os.cpu_count() or 1))
+    else:
+        max_workers = max(1, min(int(max_workers), len(dates)))
+
+    results = []
+    errors = []
+
+    def process_date(date):
+        try:
+            files = [os.path.join(archive_path_builder(date_.strftime("%Y-%m-%d").split("-")), f"{site_code}{date_:%Y%m%d}.csv") for date_ in [date - pd.Timedelta(days=3), date - pd.Timedelta(days=2), date - pd.Timedelta(days=1), date]]
+            files = [file for file in files if os.path.isfile(file)]
+            if not len(files):
+                raise FileNotFoundError(f"No K CSV files found for {site_code} or dates in {[date - pd.Timedelta(days=3), date - pd.Timedelta(days=2), date - pd.Timedelta(days=1), date]}.")
+            
+            K= pd.concat(pd.read_csv(file, parse_dates=["time"]) for file in files)
+            K.rename(columns={'K_index': 'var1'}, inplace=True)
+            fig, ax, cax = plot_k(K, logo_path=logo_path, auto_xlim=False)
+            ax.set_xlim(date - pd.Timedelta(days=2), date)
+            met = get_site_metadata(site_code)
+            fig.suptitle(f"{met['station_name']} 3-Day Local K Index", fontsize=80)
+            ax.set_ylabel('K Index (0-9)', size=30)
+
+            output_dir = Path(output_path_builder(date.strftime("%Y-%m-%d").split("-")))
+            output_dir.mkdir(parents=True, exist_ok=True)
+            output_file = output_dir / f"{site_code}{date:%Y%m%d}_kindex_magpy.png"
+            fig.savefig(output_file)
+            plt.close(fig)
+            return {
+                "date": date,
+                "output_file": output_file,
+                "error": None,
+            }
+        except Exception as exc:
+            return {
+                "date": date,
+                "output_file": None,
+                "error": _build_daily_k_error_record(exc, site_code=site_code, date=date),
+            }
+
+    if max_workers == 1:
+        for date in dates:
+            result = process_date(date)
+            if result["error"] is None:
+                results.append((result["date"], result["output_file"]))
+            else:
+                errors.append(result["error"])
+                if error_log_path is not None:
+                    _append_daily_k_errors(error_log_path, [result["error"]])
+    else:
+        with tqdm_joblib(
+            total=len(dates),
+            desc_prefix=f"Generating daily K plots for {site_code}",
+            unit="day",
+        ):
+            job_results = Parallel(n_jobs=max_workers, prefer='processes', backend="loky")(
+                delayed(process_date)(date) for date in dates
+            )
+
+        for result in job_results:
+            if result["error"] is None:
+                results.append((result["date"], result["output_file"]))
+            else:
+                errors.append(result["error"])
+                if error_log_path is not None:
+                    _append_daily_k_errors(error_log_path, [result["error"]])
+    results.sort(key=lambda item: item[0])
+    errors.sort(key=lambda item: item["date"])
+
+    return results, errors

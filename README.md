@@ -10,12 +10,33 @@ conda activate magie
 
 pip install "git+https://github.com/magie-network/MAGIE.git@0.1.0"
 
+For alert support with `pip`, install the `alerts` extra:
+
+pip install "magie[alerts] @ git+https://github.com/magie-network/MAGIE.git@0.1.0"
+
+This will install mastodon for mastodon alerts
+
+This package temporarily depends on a GitHub commit of geomagpy
+because the circular import fix is not yet released on PyPI.
+
 ### Build from environment file (not as limited with python version)
 Alternatively:
 
 conda env create -f ./binder/environment.yml
 
 conda activate magie
+
+This creates a development environment with the required dependencies but
+does not install the `magie` package itself. For local development after
+cloning the repository, install the package manually if needed, for example:
+
+pip install -e .
+
+For alert posting support, use the alerts environment instead:
+
+conda env create -f ./binder/environment_alerts.yml
+
+conda activate magie-alerts
 
 ## Tutorials
 In the notebook folder a set of notebooks can be found to demonstrate how to use the magie package

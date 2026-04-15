@@ -6,7 +6,7 @@ import warnings
 import os
 from tqdm import tqdm
 from concurrent.futures import ProcessPoolExecutor
-from magie.utils import enforce_types, validinput
+from magie.utils import enforce_types, get_asset_path, validinput
 
 
 #For loading packaged JSON resources
@@ -1572,7 +1572,8 @@ def plot_k(K_data):
     ax.spines[['top', 'right']].set_visible(False)
     ax.set_xlim(K_data.index.values.astype('datetime64[D]').min(), K_data.index.values.astype('datetime64[D]').max()+np.timedelta64(1, 'D'))
     ax.set_ylim(-.05, 9.2)
-    logo = mpimg.imread("../MagIE-logo.png")
+    with get_asset_path("MagIE-logo.png") as logo_path:
+        logo = mpimg.imread(logo_path)
     logo[..., :3] = 1.0 - logo[..., :3]  # invert RGB, keep alpha
     imagebox = OffsetImage(logo, zoom=0.3)
     ab = AnnotationBbox(

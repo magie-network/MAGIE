@@ -1,6 +1,7 @@
 [smtp]
 host = "server"
 port = port
+use_starttls = true # only change to false for localhost
 username = "username"
 password = "password"
 
