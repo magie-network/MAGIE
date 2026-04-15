@@ -2,7 +2,7 @@ name: PR Tests
 
 on:
   pull_request:
-    branches: [magpy-K-index]
+    branches: [master]
 
 jobs:
   test:
