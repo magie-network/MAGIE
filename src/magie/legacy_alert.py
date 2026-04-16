@@ -6,6 +6,7 @@ import json
 from pathlib import Path
 import tempfile
 import re
+from collections.abc import Callable
 from datetime import date, datetime, timedelta
 
 
@@ -310,6 +311,7 @@ def validate_alert_paths(
     recipients=str,
     png_save_path=str,
     sites=list,
+    png_file_name=Callable,
     alert_threshold=int,
     mastodon_config=(str, Path, type(None)),
     alert_log_path=str,
@@ -319,6 +321,7 @@ def validate_alert_paths(
 def alert(template: str = './email_templates/legacy_template.html',
           email_config: str = './email_config.toml', recipients: str = './recipients.txt',
           png_save_path: str = './magnetometer_live/', sites: list[str] = ['dun', 'val'],
+          png_file_name: Callable[[str], str] = lambda site: f"{site}_kindex.png",
           alert_threshold: int = 6, mastodon_config: str | Path | None = None, alert_log_path: str = "./alert_log.json",
           verbose: bool = True, path_prefix: str = 'https://data.magie.ie/') -> None:
     """
@@ -340,6 +343,10 @@ def alert(template: str = './email_templates/legacy_template.html',
         Output directory prefix for generated PNG plots.
     sites : list[str], optional
         Site codes to evaluate for alert conditions.
+    png_file_name : collections.abc.Callable[[str], str], optional
+        Callback used to build the output PNG filename for each site code.
+        The callable receives a site code such as ``"dun"`` and must return
+        a filename string such as ``"dun_kindex.png"``.
     alert_threshold : int, optional
         Minimum K index required before an alert is sent.
     mastodon_config : str or pathlib.Path or None, optional
@@ -388,7 +395,13 @@ def alert(template: str = './email_templates/legacy_template.html',
             fig.suptitle(f"{met['station_name']} 3-Day Local K Index", fontsize=80)
             ax.set_ylabel('K Index (0-9)', size=30)
             fig.text(.6, .05, f"Plot Updated {now_time.floor('1s')} UT", size=25)
-            fig.savefig(png_dir / f"{site}_kindex.png", dpi=300, bbox_inches='tight')
+            site_png_file_name = png_file_name(site)
+            if not isinstance(site_png_file_name, str):
+                raise TypeError(
+                    "png_file_name() must return str, "
+                    f"got {type(site_png_file_name).__name__} for site {site!r}"
+                )
+            fig.savefig(png_dir / site_png_file_name, dpi=300, bbox_inches='tight')
     
             plt.close(fig)
             kvals = pd.DataFrame({'K_index' : kvals['var1']}, index= kvals['time'])
