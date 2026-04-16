@@ -464,8 +464,7 @@ def alert(template: str = './email_templates/legacy_template.html',
 
                 # Paths to your images
                 image_paths = [
-                        png_dir / "dun_kindex.png",
-                        png_dir / "val_kindex.png",
+                        png_dir / png_file_name(site) for site in sites
                 ]
 
                 # Upload images
