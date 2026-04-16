@@ -387,7 +387,7 @@ def alert(template: str = './email_templates/legacy_template.html',
             met = get_site_metadata(site)
             fig.suptitle(f"{met['station_name']} 3-Day Local K Index", fontsize=80)
             ax.set_ylabel('K Index (0-9)', size=30)
-            fig.text(.6, .05, f"Plot Updated {now_time.floor('1s')} UT", size=25)
+            fig.text(.6, .05, f"Plot updated {now_time.floor('1s')} UT", size=25)
             fig.savefig(png_dir / f"{site}_kindex.png", dpi=300, bbox_inches='tight')
     
             plt.close(fig)
