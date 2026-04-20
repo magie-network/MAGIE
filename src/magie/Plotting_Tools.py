@@ -2,8 +2,9 @@ import numpy as np
 import matplotlib.pyplot as plt
 import matplotlib.cm as cm
 from collections.abc import Callable
+from pathlib import Path
 
-from magie.utils import enforce_types
+from magie.utils import enforce_types, get_asset_path
 
 
 class ArgumentError(Exception):
@@ -323,3 +324,198 @@ def contour_labels(contour, xpad=None, ypad=None, sides=['left', 'right'], rtol=
     if len(sides)==1:
         return labels[0]
     return labels
+
+
+@enforce_types(
+    data=object,
+    logo_path=(str, Path, type(None)),
+    auto_xlim=bool,
+)
+def plot_BxByBz(data, logo_path=None, auto_xlim=True):
+    """
+    Plot the X, Y, and Z magnetic field components as stacked time series.
+
+    Parameters
+    ----------
+    data : object
+        Time-indexed magnetic dataset supporting ``copy()``, ``filter()``, and
+        column access for ``time``, ``x``, ``y``, and ``z``.
+    logo_path : str or pathlib.Path or None, optional
+        Optional path to a logo image to place in the lower-right corner of
+        each subplot. When omitted, the packaged MagIE logo is used.
+    auto_xlim : bool, optional
+        When ``True``, set each subplot x-axis to the day-bounded extent of
+        the provided time series.
+
+    Returns
+    -------
+    tuple
+        ``(fig, ax_Bx, ax_By, ax_Bz)`` containing the created Matplotlib
+        figure and axes.
+    """
+    from matplotlib.offsetbox import AnnotationBbox, OffsetImage
+    import matplotlib.image as mpimg
+    from matplotlib.ticker import MaxNLocator
+    import matplotlib.dates as mdates
+
+    data = data.copy()  # avoid mutating caller data
+    data= data.filter()
+    fig= plt.figure(figsize=(30, 15))
+    gs= fig.add_gridspec(3, 1, hspace=0.2)
+    ax_Bx= fig.add_subplot(gs[0])
+    ax_By= fig.add_subplot(gs[1])
+    ax_Bz= fig.add_subplot(gs[2])
+    colors = plt.rcParams["axes.prop_cycle"].by_key()["color"]
+
+    if logo_path is None:
+        with get_asset_path("MagIE-logo.png") as default_logo_path:
+            logo = mpimg.imread(default_logo_path)
+    else:
+        logo = mpimg.imread(logo_path)
+
+    logo[..., :3] = 1.0 - logo[..., :3]  # invert RGB, keep alpha
+    for ax, col, color in zip([ax_Bx, ax_By, ax_Bz], ['x', 'y', 'z'], colors):
+        ax.tick_params(axis='both', which='major', labelsize=20)
+        ax.grid(True, which='both', linestyle='--', alpha=1, lw=1)
+        # --- Major ticks: days ---
+        ax.xaxis.set_major_locator(mdates.DayLocator())
+        ax.xaxis.set_major_formatter(mdates.DateFormatter('%H:%M\n%d-%b-%Y'))
+
+        # --- Minor ticks: hours ---
+        ax.xaxis.set_minor_locator(mdates.HourLocator(byhour=[0, 6, 12, 18]))
+        ax.xaxis.set_minor_formatter(mdates.DateFormatter('%H:%M'))
+
+        # Styling
+        ax.tick_params(axis='x', which='major', labelsize=25)
+        ax.tick_params(axis='y', which='major', labelsize=25)
+
+        ax.tick_params(axis='x', which='minor', labelsize=25)
+
+        if auto_xlim:
+            ax.set_xlim(np.array(data['time']).astype('datetime64[D]').min()+np.timedelta64(1, 'D'), np.array(data['time']).astype('datetime64[D]').max()+np.timedelta64(1, 'D'))
+        ax.plot(data['time'], data[col], color=color)
+        ax.set_ylabel(f'B{col} [nT]', size=50)
+        ax.yaxis.set_major_locator(MaxNLocator(nbins=6))
+        for date in np.unique(np.array(data['time']).astype('datetime64[D]')): ax.axvline(date, color='black')
+        imagebox = OffsetImage(logo, zoom=0.1)
+        ab = AnnotationBbox(
+            imagebox,
+            (0.98, 0.02),  # bottom-right in axes coords
+            xycoords=ax.transAxes,
+            frameon=False,
+            box_alignment=(1, 0),
+            zorder=0,
+        )
+        ax.add_artist(ab)
+
+    for ax in [ax_Bx, ax_By]:
+        ax.sharex(ax_Bz)
+        ax.tick_params(labelbottom=False, which='both', bottom=True, top=True, left=True, right=True)
+    
+    return fig, ax_Bx, ax_By, ax_Bz
+
+@enforce_types(
+    data=object,
+    logo_path=(str, Path, type(None)),
+    auto_xlim=bool,
+)
+def plot_dH(data, logo_path=None, auto_xlim=True):
+    """
+    Plot declination, horizontal intensity, and the first difference of H.
+
+    Parameters
+    ----------
+    data : object
+        Time-indexed magnetic dataset supporting ``copy()``, ``filter()``, and
+        column access for ``time``, ``x``, and ``y``.
+    logo_path : str or pathlib.Path or None, optional
+        Optional path to a logo image to place in the lower-right corner of
+        each subplot. When omitted, the packaged MagIE logo is used.
+    auto_xlim : bool, optional
+        When ``True``, set each subplot x-axis to the day-bounded extent of
+        the provided time series.
+
+    Returns
+    -------
+    tuple
+        ``(fig, ax_D, ax_H, ax_dH)`` containing the created Matplotlib figure
+        and axes.
+    """
+    from matplotlib.offsetbox import AnnotationBbox, OffsetImage
+    import matplotlib.image as mpimg
+    from matplotlib.ticker import MaxNLocator
+    import matplotlib.dates as mdates
+
+    data = data.copy()  # avoid mutating caller data
+    data= data.filter()
+    fig= plt.figure(figsize=(30, 15))
+    gs= fig.add_gridspec(3, 1, hspace=0.2)
+    ax_D= fig.add_subplot(gs[0])
+    ax_H= fig.add_subplot(gs[1])
+    ax_dH= fig.add_subplot(gs[2])
+    colors = plt.rcParams["axes.prop_cycle"].by_key()["color"]
+    H = np.sqrt(data['x']**2 + data['y']**2)
+
+    dHdt = np.diff(H, prepend=np.nan)
+
+    ratio = np.divide(
+        data['y'],
+        H,
+        out=np.full(H.shape, np.nan, dtype=float),
+        where=H != 0,
+    )
+    D = np.degrees(np.arcsin(np.clip(ratio, -1.0, 1.0)))
+
+
+
+
+
+    if logo_path is None:
+        with get_asset_path("MagIE-logo.png") as default_logo_path:
+            logo = mpimg.imread(default_logo_path)
+    else:
+        logo = mpimg.imread(logo_path)
+
+    logo[..., :3] = 1.0 - logo[..., :3]  # invert RGB, keep alpha
+    for ax, col, color in zip([ax_D, ax_H, ax_dH], [D, H, dHdt], colors):
+        ax.tick_params(axis='both', which='major', labelsize=20)
+        ax.grid(True, which='both', linestyle='--', alpha=1, lw=1)
+        # --- Major ticks: days ---
+        ax.xaxis.set_major_locator(mdates.DayLocator())
+        ax.xaxis.set_major_formatter(mdates.DateFormatter('%H:%M\n%d-%b-%Y'))
+
+        # --- Minor ticks: hours ---
+        ax.xaxis.set_minor_locator(mdates.HourLocator(byhour=[0, 6, 12, 18]))
+        ax.xaxis.set_minor_formatter(mdates.DateFormatter('%H:%M'))
+
+        # Styling
+        ax.tick_params(axis='x', which='major', labelsize=25)
+        ax.tick_params(axis='y', which='major', labelsize=25)
+
+        ax.tick_params(axis='x', which='minor', labelsize=25)
+
+        if auto_xlim:
+            ax.set_xlim(np.array(data['time']).astype('datetime64[D]').min()+np.timedelta64(1, 'D'), np.array(data['time']).astype('datetime64[D]').max()+np.timedelta64(1, 'D'))
+        ax.plot(data['time'], col, color=color)
+        ax.yaxis.set_major_locator(MaxNLocator(nbins=4))
+        for date in np.unique(np.array(data['time']).astype('datetime64[D]')): ax.axvline(date, color='black')
+        imagebox = OffsetImage(logo, zoom=0.1)
+        ab = AnnotationBbox(
+            imagebox,
+            (0.98, 0.02),  # bottom-right in axes coords
+            xycoords=ax.transAxes,
+            frameon=False,
+            box_alignment=(1, 0),
+            zorder=0,
+        )
+        ax.add_artist(ab)
+
+    for ax in [ax_D, ax_H]:
+        ax.sharex(ax_dH)
+        ax.tick_params(labelbottom=False, which='both', bottom=True, top=True, left=True, right=True)
+    ax_D.set_ylabel('D [degress]', size=40)
+    ax_H.set_ylabel('H [nT]', size=40)
+    ax_dH.set_ylabel(r'$\frac{dH}{dt}$ [nT/min]', size=40)
+    ymax = np.nanmax(np.abs(dHdt))
+    ax_dH.set_ylim(-ymax, ymax)
+    return fig, ax_D, ax_H, ax_dH
