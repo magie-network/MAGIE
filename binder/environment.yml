@@ -14,7 +14,8 @@ dependencies:
   - joblib=1.2.0
   - requests=2.31.0
   - notebook=7.5.0
-
+  - python-dotenv=1.2.2
+  
   # testing
   - pytest=8.3.3
 
