@@ -390,11 +390,13 @@ def alert(template: str = './email_templates/legacy_template.html',
         Ks = []
         for site in sites:
             kvals = live_k(now_time, site_code=site, path_prefix=path_prefix)
-            fig, ax, _ = plot_k(kvals)
+            fig, ax, cax = plot_k(kvals)
             met = get_site_metadata(site)
             fig.suptitle(f"{met['station_name']} 3-Day Local K Index", fontsize=80)
             ax.set_ylabel('K Index (0-9)', size=30)
-            fig.text(.6, .05, f"Plot Updated {now_time.floor('1s')} UT", size=25)
+            fig.text(.6, .15, f"Plot Updated {now_time.floor('1s')} UT", size=25)
+            cax.remove()
+            fig.canvas.draw()
             site_png_file_name = png_file_name(site)
             if not isinstance(site_png_file_name, str):
                 raise TypeError(
