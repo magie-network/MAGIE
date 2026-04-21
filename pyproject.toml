@@ -25,6 +25,7 @@ dependencies = [
   "tomli>=2.0.1",
   "joblib>=1.2.0",
   "requests>=2.31.0",
+  "python-dotenv>=1.2.2",
   # Temporary: upstream fix not yet released on PyPI
   "geomagpy @ git+https://github.com/geomagpy/magpy.git@c10bfb3a8d03587de4b80ff70d821c4e19aa5066",
 
