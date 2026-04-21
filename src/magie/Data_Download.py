@@ -14,6 +14,7 @@ from urllib.request import urlretrieve
 from pandas.errors import ParserError
 from magie.utils import validinput, enforce_types
 from tqdm import tqdm
+from dotenv import load_dotenv
 
 
 @enforce_types(
@@ -470,6 +471,257 @@ def get_GIN_data(dataStartDate, iagaSites, dataDuration, orientation,
     dfSites = pd.concat(dfs, axis=1)
 
     return dfSites
+
+
+def get_SAGE_variometer(printHeader=False):
+    """
+    Returns the latest 24 hours live 1s Data from Florence Court (FLO)
+    British Geological Survey's SWIMMR Activities in Ground Effects (SAGE)
+    geomagnetic variometer from a password-protected website.
+    Data are updated every 30 minutes
+
+    Login credentials are as separate rows in a .env file where this script lives.
+    username=url_user_name
+    password=url_password
+
+    Magneic measurements provided for X, Y and Z components in nT
+    Orientation is approximately in North, South, East directions
+    Latitude: 54.25, Longitude: 352.27
+    All times are UT
+    Data Provided by the British Geological Survey
+    Data are provided as is. It may contain unnatural disturbances and
+    periods of missing data due to battery voltage dropping below cut-off
+    contact: spaceweather@bgs.ac.uk
+
+    Convert columns to the format available on data.magie.ie as follows:
+    Data & Time Index# Bx By Bz
+
+    Parameters:
+    -----------
+    printHeader:boolean optional
+
+    Raises:
+    -------
+        RuntimeError in try-except loop for url validity
+        HTTP status code
+        200	The request was completed successfully.
+        301	A resource has been moved.
+        400	Bad request. Returned where the request parameters are incorrect.
+        404	Requested data is not available.
+        500	Server encountered an error trying to process the request.
+
+    Returns:
+    --------
+        df:pandas
+            Live data from BGS Geomagnetic variometer at FLO
+
+    Usage:
+    --------
+        df = get_SAGE_variometer()
+    """
+    url = "https://geomag.bgs.ac.uk/SpaceWeather/fl_24hrdata.out"
+    # fetch the username and password from the .env file stored
+    # in the same path as this script i.e. <src/magie/>
+    load_dotenv()
+    username = os.getenv("username")
+    password = os.getenv("password")
+
+    try:
+        resp = requests.get(url, auth=(username, password))
+        resp.raise_for_status()
+    except requests.HTTPError as e:
+        raise RuntimeError(f"HTTP status code {resp.status_code} \n\
+                            for {resp.url}") from e
+
+    data = resp.text
+    dataLines = data.splitlines()
+
+    headerLines = []
+    columnHeader = []
+    numericLines = []
+    isNumericSection = False
+
+    for line in dataLines:
+        # removes leading space
+        stripped = line.lstrip()
+
+        if isNumericSection:
+            numericLines.append(line)
+            continue
+
+        if stripped.startswith('Date'):
+            # append column header
+            columnHeader.append(line)
+            # if isNumericSection = True then program has already seen row
+            # beginning with "Date"
+            isNumericSection = True
+        else:
+            # numeric data appended here
+            headerLines.append(line)
+    
+    if printHeader is True:
+        print('File Header Records')
+        for i, line in enumerate(headerLines):
+            print(f"{i}: [{line}]")
+
+    colNames = columnHeader[0].split()
+    df = pd.read_csv(
+        StringIO("\n".join(numericLines)), sep=r'\s+', names=colNames
+        )
+    df['Date & Time'] = pd.to_datetime(df.iloc[:, 0] + ' ' + df.iloc[:, 1])
+    df['Date & Time'] = df['Date & Time'].dt.strftime("%Y/%m/%d %H:%M:%S")
+    df.drop(columns=[df.columns[0], df.columns[1]], inplace=True)
+    df.set_index('Date & Time', inplace=True, drop=True)
+    df['Index#'] = range(1, len(df) + 1)
+    df.rename(columns={"X": "Bx", "Y": "By", "Z": "Bz"}, inplace=True)
+    df.index = pd.to_datetime(df.index, format="%Y/%m/%d %H:%M:%S")
+    df = df.reindex(columns=['Index#', "Bx", "By", "Bz"])
+
+    return df
+
+
+def daily_file_template(day, freq="1s", flag=99999.00):
+    """
+    Create a full-day DataFrame filled with flag values
+    Columns are defined as those of data.magie.ie as follows:
+    Data & Time Index# Bx By Bz
+
+    Parameters:
+    -----------
+    day: datetime.date
+
+    freq: str optional
+        defaults to one-second BGS Geomagnetic Variometer Data
+        Use "1min" for per minute freqeuncy and "1h" for per hour
+
+    flag: float optional
+        indicates missing data either 99999.0 or 99999.00
+        depending on component.
+
+    Returns:
+    --------
+    template: pandas.DataFrame
+        Name file header. Pre-populate full day flag values in
+        Bx, By and Bz.
+     """
+    idx = pd.date_range(start=pd.Timestamp(day),
+                        end=pd.Timestamp(day) + \
+                        pd.Timedelta(days=1) - \
+                        pd.Timedelta(freq),
+                        freq=freq
+                        )
+
+    n = len(idx)
+    template = pd.DataFrame(index=idx)
+    template.index.name = "Date & Time"
+    template["Index#"] = np.arange(1, n + 1)
+    template["Bx"] = flag
+    template["By"] = flag
+    template["Bz"] = flag
+    # only data columns set to float
+    template[["Bx", "By", "Bz"]] = template[["Bx", "By", "Bz"]].astype(float)
+
+    return template
+
+
+def save_SAGE_data(df, baseDir, freq='1s', obs="flo", flag=99999.00):
+    """
+    Allocate real data from dataframe and replace the flagged values in
+    the day-files. Extracts final timestamp of input dataframe.
+
+    DataFrame with datetime index spanning 24-hours, crossing midnight
+    Saves daily files as floYYYYMMDD.txt.
+    Each daily file is prepopulated with a full day's timestamps
+    And have flag values=99999.0 for Bx, By, Bz
+    When real data exists, they overwrite the flagged values
+    Gaps are preserved automatically.
+
+    Parameters:
+    -----------
+    baseDir: str
+        base directory for daily variometer files,actual files live in its sub-folders
+
+    df (pandas.DataFrame): data indexed with timestamps
+        in %Y/%m/%d %H:%M:%S format; E.g: "2026/01/09 12:30:00"
+        Columns in the order of: ['Index#', "Bx", "By", "Bz"]
+
+    freq: str optional
+        defaults to one-second Florence Court (FLO) data part of SAGE.
+        Use "1min" for per minute freqeuncy and "1h" for per hour
+
+    obs: str optional
+        Three letters lowercase default to "flo" BGS variometer.
+
+    flag: float optional
+        indicates missing data either 99999.0 or 99999.00
+        depending on component.
+
+    Raises:
+    -------
+    FileNotFoundError
+
+    Dependencies:
+    -------
+        Calls daily_file_template function to populate a DataFrame of
+        flagged values
+        get_SAGE_variometer function stores real BGS data to input df
+
+    Returns:
+    --------
+        None
+    Usage:
+    --------
+        save_BGS_data(df, outputDir, freq='1s', obs="flo", flag=99999.00)
+    """
+    if not baseDir.exists():
+        raise FileNotFoundError(
+            f"Output directory does not exist: {baseDir}"
+            )
+
+    cols = ["Bx", "By", "Bz"]
+    for day, oneDayData in df.groupby(df.index.date):
+        day = pd.Timestamp(day)
+        dataStr = day.strftime("%Y%m%d")
+        fname = f"{obs}{dataStr}.txt"
+        # Extract date
+        dateStr = Path(fname).stem.replace(f"{obs}", "")
+        dateObj = dt.strptime(dateStr, "%Y%m%d")
+
+        # Build directory
+        targetDir = baseDir/ dateObj.strftime("%Y") \
+                            / dateObj.strftime("%m") \
+                            / dateObj.strftime("%d") \
+                            / "txt"
+
+        targetDir.mkdir(parents=True, exist_ok=True)
+
+        # Save file there
+        filePath = targetDir / fname
+
+        if filePath.exists():
+            dfOneDay = pd.read_csv(
+                filePath, sep=r"\s+", index_col=0, parse_dates=True
+                )
+        else:
+            dfOneDay = daily_file_template(day, freq=freq, flag=flag)
+
+        src = oneDayData[cols].copy()
+        # creates boolean-mask of rows in src[col] that are non-NaN nor flagged
+        # valid rows are True for rows in src, should overwrite dfOneDay
+        for col in cols:
+            valid = ~src[col].isna() & (src[col] != flag)
+            # intersection() only keep timestamps in src that exist in dfOneDay
+            matchedIndex = src.index[valid].intersection(dfOneDay.index)
+            dfOneDay.loc[matchedIndex, col] = src.loc[matchedIndex, col]
+
+        dfOut = dfOneDay.copy()
+        # ensure numeric columns are floats
+        dfOut[cols] = dfOut[cols].astype(float)
+        dfOut.index = pd.to_datetime(dfOut.index)
+
+        # saves file space-delimited
+        dfOut.to_csv(filePath, sep=" ", index=True, float_format="%.2f")
+        print(f"Saved/updated: {filePath.name}")
 
 
 if __name__ == '__main__':
