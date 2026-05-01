@@ -17,8 +17,6 @@ def test_all_submodules_importable():
         prefix=magie.__name__ + ".",
     ):
         module_name = module_info.name
-        if ''
-
         try:
             importlib.import_module(module_name)
         except Exception as exc:
