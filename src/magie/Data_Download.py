@@ -57,7 +57,7 @@ def download_progress_hook(count, block_size, total_size):
     """
     # Calculate percentage of the download
     downloaded_size = count * block_size
-    if total_size!=0:
+    if total_size != 0:
         percentage = min(100, downloaded_size * 100 / total_size)
     else:
         percentage = 0
@@ -136,29 +136,29 @@ def download_magie(start, end, sites=['arm', 'dun', 'val', 'bir'], save_file_nam
     str: The name of the file where the data is saved.
     """
     url_prefix = 'https://data.magie.ie/'
-    
+
     # Check for the earliest available year
     min_year = 0
     for i in range(2000, dt.now().year, 1):
         if requests.get(f"{url_prefix}{i}/").status_code < 400:
             min_year = i
             break
- 
+
     # Raise an error if no year is found
     if not min_year:
         raise ValueError(f'Unable to find the first year available in the range 2000-{dt.now().year}')
- 
+
     # Check for the latest available year
     max_year = 0
     for i in range(dt.now().year, 2000, -1):
         if requests.get(f"{url_prefix}{i}/").status_code < 400:
             max_year = i
             break
-    
+
     # Raise an error if no year is found
     if not max_year:
         raise ValueError(f'Unable to find the last year available in the range 2000-{dt.now().year}')
- 
+
     # Adjust the start date if it is earlier than the first available year
     if start < np.datetime64(f'{min_year}-01-01'):
         warnings.warn(
@@ -166,7 +166,7 @@ def download_magie(start, end, sites=['arm', 'dun', 'val', 'bir'], save_file_nam
             'The download will begin at the first year available.'
         )
         start = np.datetime64(f'{min_year}-01-01')
- 
+
     # Adjust the end date if it is later than the last available year
     if end > np.datetime64(f'{max_year}-12-31'):
         warnings.warn(
@@ -174,11 +174,11 @@ def download_magie(start, end, sites=['arm', 'dun', 'val', 'bir'], save_file_nam
             'The download will end at the last year available.'
         )
         end = np.datetime64(f'{max_year}-12-31')
-  
+
     # Create a default filename if none is provided
     if not save_file_name:
         save_file_name = '_'.join(sites) + f'{date2filename(start)[:-9]}_to_{date2filename(end)[:-9]}.hdf5'
-  
+
     # Check if the save file already exists
     if os.path.isfile(save_file_name):
         if not validinput(f'save file: {save_file_name} already exists. Append to pre-existing file? (y/n)', 'y', 'n'):
@@ -188,17 +188,17 @@ def download_magie(start, end, sites=['arm', 'dun', 'val', 'bir'], save_file_nam
             )
         else:
             warnings.warn(f'Appending to pre-existing file: {save_file_name}', UserWarning)
-  
+
     # Define column names for the data
     columns = ['Date_UTC', 'Index', 'Bx', 'By', 'Bz', 'E1', 'E2', 'E3', 'E4', 'TFG', 'TE', 'Volts']
     drop_index = columns.copy()
     drop_index[1] = 'Site'
-    
+
     # Construct an array of dates to download
     dates = np.array(
         [start + np.timedelta64(i, 'D') for i in range((end - start).astype('timedelta64[D]').astype(int) + 1)]
     )
-    
+
     # Loop through each date and download the data (using tqdm-backed progressbar)
     for date in progressbar(dates, max_value=len(dates)):
         date = date.astype('datetime64[D]').astype(str).split('-')
@@ -206,7 +206,7 @@ def download_magie(start, end, sites=['arm', 'dun', 'val', 'bir'], save_file_nam
         # loop through each site
         for site in sites:
             filename = site + '{}{}{}.txt'.format(*date)
-            
+
             # Check if the file exists on the server
             if exists_check(url, filename) >= 400:
                 warnings.warn(f'File not found for site= {site} on ' + '{}-{}-{}'.format(*date[::-1]))
@@ -248,16 +248,16 @@ def download_magie(start, end, sites=['arm', 'dun', 'val', 'bir'], save_file_nam
                 new_f = '\n'.join(f.split('\t\n'))
                 with open(filename, mode='w') as F:
                     F.write(new_f)
-              
+
                 if os.path.isfile('bad_files.txt'):
                     with open('bad_files.txt', 'r') as f:
                         bad_files = f.read()
                         f.close()
                 else:
                     bad_files = ''
-                
+
                 bad_files += 'parser error:' + filename + '\n'
-                
+
                 with open('bad_files.txt', 'w') as f:
                     f.write(bad_files)
                     f.close()
@@ -285,7 +285,7 @@ def download_magie(start, end, sites=['arm', 'dun', 'val', 'bir'], save_file_nam
 
                 # Apply filter to remove one second
                 file = file[(file['Date_UTC'] >= start_ts) & (file['Date_UTC'] <= end_ts)]
-       
+
             # File bug handling when last line of the file contains incomplete data points
             # Check for object data types and handle them appropriately
             if 'O' in [file[col].dtype for col in file.columns[:-1]]:
@@ -295,21 +295,21 @@ def download_magie(start, end, sites=['arm', 'dun', 'val', 'bir'], save_file_nam
                         f.close()
                 else:
                     bad_files = ''
-              
+
                 bad_files += filename + '\n'
-              
+
                 with open('bad_files.txt', 'w') as f:
                     f.write(bad_files)
                     f.close()
                 file = file.loc[0:len(file)-2]
-             
+
                 if file['Date_UTC'].dtype == 'O':
                     file['Date_UTC'] = pd.to_datetime(file.Date_UTC, dayfirst=True)
-              
+
                 for column in columns[2:]:
                     if file[column].dtype == 'O':
                         file[column] = file[column].astype('float64')
-            
+
             # Save the data to an HDF5 file using specified columns
             # (the index column is removed as it is meaningless in a merged file)
             file[drop_index].to_hdf(
@@ -320,7 +320,7 @@ def download_magie(start, end, sites=['arm', 'dun', 'val', 'bir'], save_file_nam
                 format='t',
                 data_columns=True
             )
-            
+
             # Remove the downloaded file to save space
             os.remove(filename)
     return save_file_name
@@ -341,13 +341,16 @@ def get_GIN_data(dataStartDate, iagaSites, dataDuration, orientation,
                  print_progress=True):
     """
     Get magnetic data using http from Edinburgh GIN for a list of
-    observatories over continous days and saves iaga2002 format data 
+    observatories over continous days and saves iaga2002 format data
     to a dataframe without saving to file locally.
     API webservice details are in https://imag-data.bgs.ac.uk/GIN_V1/
 
     Example API call:
-    https://imag-data.bgs.ac.uk/GIN_V1/GINServices?Request=GetData&observatoryIagaCode=VAL&samplesPerDay=Minute
-    &dataStartDate=2024-12-31&dataDuration=1&publicationState=best-avail&Format=iaga2002&orientation=XYZF&recordTermination=UNIX
+    https://imag-data.bgs.ac.uk/GIN_V1/GINServices?Request=GetData&
+    observatoryIagaCode=VAL&samplesPerDay=Minute&dataStartDate=2024-12-31&
+    dataDuration=1&publicationState=best-avail&Format=iaga2002&
+    orientation=XYZF&recordTermination=UNIX
+
     File name in the format of val20241122dmin.min for definitive (d)
     state where 20241122 is the start date.
     File may contain multiple days of data in one file if dataDuration > 1.
@@ -432,8 +435,8 @@ def get_GIN_data(dataStartDate, iagaSites, dataDuration, orientation,
             raise RuntimeError(f"HTTP status code {resp.status_code} \n\
                                for {resp.url}") from e
         if print_progress:
-            print(f'{dataDuration} day(s) of {dataStartDate} data for {obs} is \n\
-        getting extracted from:\n{url}')
+            print(f'{dataDuration} day(s) of {dataStartDate} data for {obs} \n\
+        is getting extracted from:\n{url}')
 
         data = resp.text
         dataLines = data.splitlines()
@@ -474,9 +477,8 @@ def get_GIN_data(dataStartDate, iagaSites, dataDuration, orientation,
 
     return dfSites
 
-@enforce_types(
-    printHeader=bool,
-)
+
+@enforce_types(printHeader=bool)
 def get_SAGE_variometer(printHeader=False):
     """
     Returns the latest 24 hours live 1s Data from Florence Court (FLO)
@@ -484,7 +486,7 @@ def get_SAGE_variometer(printHeader=False):
     geomagnetic variometer from a password-protected website.
     Data are updated every 30 minutes
 
-    Login credentials are as separate rows in a .env file where this script lives.
+    Login credentials are listed in separate rows in a .env file.
     username=url_user_name
     password=url_password
 
@@ -562,7 +564,7 @@ def get_SAGE_variometer(printHeader=False):
         else:
             # numeric data appended here
             headerLines.append(line)
-    
+
     if printHeader is True:
         print('File Header Records')
         for i, line in enumerate(headerLines):
@@ -583,7 +585,8 @@ def get_SAGE_variometer(printHeader=False):
 
     return df
 
-enforce_types(
+
+@enforce_types(
     day=datetime.date,
     freq=str,
     flag=(int, float),
@@ -613,8 +616,8 @@ def daily_file_template(day, freq="1s", flag=99999.00):
         Bx, By and Bz.
      """
     idx = pd.date_range(start=pd.Timestamp(day),
-                        end=pd.Timestamp(day) + \
-                        pd.Timedelta(days=1) - \
+                        end=pd.Timestamp(day) +
+                        pd.Timedelta(days=1) -
                         pd.Timedelta(freq),
                         freq=freq
                         )
@@ -631,14 +634,17 @@ def daily_file_template(day, freq="1s", flag=99999.00):
 
     return template
 
-enforce_types(
+
+@enforce_types(
     df=pd.DataFrame,
     baseDir=str,
     freq=str,
     obs=str,
     flag=(int, float),
+    printHeader=bool,
 )
-def save_SAGE_data(df, baseDir, freq='1s', obs="flo", flag=99999.00):
+def save_SAGE_data(df, baseDir, freq='1s', obs="flo", flag=99999.00,
+                   printHeader=False):
     """
     Allocate real data from dataframe and replace the flagged values in
     the day-files. Extracts final timestamp of input dataframe.
@@ -653,7 +659,8 @@ def save_SAGE_data(df, baseDir, freq='1s', obs="flo", flag=99999.00):
     Parameters:
     -----------
     baseDir: str
-        base directory for daily variometer files,actual files live in its sub-folders
+        base directory for daily variometer files,
+        actual files live in its sub-folders
 
     df (pandas.DataFrame): data indexed with timestamps
         in %Y/%m/%d %H:%M:%S format; E.g: "2026/01/09 12:30:00"
@@ -664,11 +671,13 @@ def save_SAGE_data(df, baseDir, freq='1s', obs="flo", flag=99999.00):
         Use "1min" for per minute freqeuncy and "1h" for per hour
 
     obs: str optional
-        Three letters lowercase default to "flo" BGS variometer.
+        Three letters lowercase default to "flo" BGS variometer
 
     flag: float optional
         indicates missing data either 99999.0 or 99999.00
         depending on component.
+
+    printHeader: boolean optional
 
     Raises:
     -------
@@ -702,10 +711,10 @@ def save_SAGE_data(df, baseDir, freq='1s', obs="flo", flag=99999.00):
         dateObj = dt.strptime(dateStr, "%Y%m%d")
 
         # Build directory
-        targetDir = baseDir/ dateObj.strftime("%Y") \
-                            / dateObj.strftime("%m") \
-                            / dateObj.strftime("%d") \
-                            / "txt"
+        targetDir = baseDir / dateObj.strftime("%Y") \
+            / dateObj.strftime("%m") \
+            / dateObj.strftime("%d") \
+            / "txt"
 
         targetDir.mkdir(parents=True, exist_ok=True)
 
@@ -735,7 +744,8 @@ def save_SAGE_data(df, baseDir, freq='1s', obs="flo", flag=99999.00):
 
         # saves file space-delimited
         dfOut.to_csv(filePath, sep=" ", index=True, float_format="%.2f")
-        print(f"Saved/updated: {filePath.name}")
+        if printHeader is True:
+            print(f"Saved/updated: {filePath.name}")
 
 
 if __name__ == '__main__':
