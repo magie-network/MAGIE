@@ -474,7 +474,9 @@ def get_GIN_data(dataStartDate, iagaSites, dataDuration, orientation,
 
     return dfSites
 
-@enforce_types(printerHeader=bool)
+@enforce_types(
+    printHeader=bool,
+)
 def get_SAGE_variometer(printHeader=False):
     """
     Returns the latest 24 hours live 1s Data from Florence Court (FLO)
@@ -581,7 +583,11 @@ def get_SAGE_variometer(printHeader=False):
 
     return df
 
-enforce_types(day=datetime.date, freq= str, flag= (int, float))
+enforce_types(
+    day=datetime.date,
+    freq=str,
+    flag=(int, float),
+)
 def daily_file_template(day, freq="1s", flag=99999.00):
     """
     Create a full-day DataFrame filled with flag values
@@ -625,7 +631,13 @@ def daily_file_template(day, freq="1s", flag=99999.00):
 
     return template
 
-enforce_types(df= pd.DataFrame, baseDir=str, freq=str, obs=str, flag= (int, float))
+enforce_types(
+    df=pd.DataFrame,
+    baseDir=str,
+    freq=str,
+    obs=str,
+    flag=(int, float),
+)
 def save_SAGE_data(df, baseDir, freq='1s', obs="flo", flag=99999.00):
     """
     Allocate real data from dataframe and replace the flagged values in
