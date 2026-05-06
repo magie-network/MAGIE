@@ -329,9 +329,10 @@ def contour_labels(contour, xpad=None, ypad=None, sides=['left', 'right'], rtol=
 @enforce_types(
     data=object,
     logo_path=(str, Path, type(None)),
+    show_logo=bool,
     auto_xlim=bool,
 )
-def plot_BxByBz(data, logo_path=None, auto_xlim=True):
+def plot_BxByBz(data, logo_path=None, show_logo= False, auto_xlim=True):
     """
     Plot the X, Y, and Z magnetic field components as stacked time series.
 
@@ -342,8 +343,11 @@ def plot_BxByBz(data, logo_path=None, auto_xlim=True):
         column access for ``time``, ``x``, ``y``, and ``z``.
     logo_path : str or pathlib.Path or None, optional
         Optional path to a logo image to place in the lower-right corner of
-        each subplot. When omitted, the packaged MagIE logo is used.
-    auto_xlim : bool, optional
+        each subplot. When omitted, the packaged MagIE logo is used if
+        ``show_logo`` is true.
+    show_logo : bool, default False
+        Whether to add the MagIE logo overlay to each subplot.
+    auto_xlim : bool, default True
         When ``True``, set each subplot x-axis to the day-bounded extent of
         the provided time series.
 
@@ -360,66 +364,83 @@ def plot_BxByBz(data, logo_path=None, auto_xlim=True):
 
     data = data.copy()  # avoid mutating caller data
     data= data.filter()
-    fig= plt.figure(figsize=(30, 15))
+
+    # Use one shared figure with vertically stacked axes for component comparison.
+    fig= plt.figure(figsize=(400/96, 378/96))
     gs= fig.add_gridspec(3, 1, hspace=0.2)
     ax_Bx= fig.add_subplot(gs[0])
     ax_By= fig.add_subplot(gs[1])
     ax_Bz= fig.add_subplot(gs[2])
     colors = plt.rcParams["axes.prop_cycle"].by_key()["color"]
 
-    if logo_path is None:
-        with get_asset_path("MagIE-logo.png") as default_logo_path:
-            logo = mpimg.imread(default_logo_path)
-    else:
-        logo = mpimg.imread(logo_path)
+    if show_logo:
+        # Load the logo once and reuse it on each component subplot.
+        if logo_path is None:
+            with get_asset_path("MagIE-logo.png") as default_logo_path:
+                logo = mpimg.imread(default_logo_path)
+        else:
+            logo = mpimg.imread(logo_path)
 
-    logo[..., :3] = 1.0 - logo[..., :3]  # invert RGB, keep alpha
+        logo[..., :3] = 1.0 - logo[..., :3]  # invert RGB, keep alpha
     for ax, col, color in zip([ax_Bx, ax_By, ax_Bz], ['x', 'y', 'z'], colors):
-        ax.tick_params(axis='both', which='major', labelsize=20)
-        ax.grid(True, which='both', linestyle='--', alpha=1, lw=1)
-        # --- Major ticks: days ---
-        ax.xaxis.set_major_locator(mdates.DayLocator())
-        ax.xaxis.set_major_formatter(mdates.DateFormatter('%H:%M\n%d-%b-%Y'))
+        ax.tick_params(axis='both', which='major')
+        # Reset grid state before applying separate x/y grid styles.
+        ax.grid(False)
 
-        # --- Minor ticks: hours ---
+        # Vertical grid lines mark six-hour minor ticks.
+        ax.grid(True, which='minor', axis='x', linestyle='--', alpha=1, lw=1)
+
+        # Horizontal grid lines track the component scale.
+        ax.grid(True, which='major', axis='y', linestyle='--', alpha=1, lw=1)
         ax.xaxis.set_minor_locator(mdates.HourLocator(byhour=[0, 6, 12, 18]))
-        ax.xaxis.set_minor_formatter(mdates.DateFormatter('%H:%M'))
 
-        # Styling
-        ax.tick_params(axis='x', which='major', labelsize=25)
-        ax.tick_params(axis='y', which='major', labelsize=25)
+        ax.xaxis.set_major_locator(
+            mdates.HourLocator(byhour=[11])  # noon
+        )
 
-        ax.tick_params(axis='x', which='minor', labelsize=25)
+        ax.xaxis.set_major_formatter(
+            mdates.DateFormatter('%d-%b-%Y')
+        )
 
         if auto_xlim:
             ax.set_xlim(np.array(data['time']).astype('datetime64[D]').min()+np.timedelta64(1, 'D'), np.array(data['time']).astype('datetime64[D]').max()+np.timedelta64(1, 'D'))
         ax.plot(data['time'], data[col], color=color)
-        ax.set_ylabel(f'B{col} [nT]', size=50)
+        ax.set_ylabel(f'B{col} (nT)')
         ax.yaxis.set_major_locator(MaxNLocator(nbins=6))
+        # Emphasize day boundaries over the six-hour minor grid.
         for date in np.unique(np.array(data['time']).astype('datetime64[D]')): ax.axvline(date, color='black')
-        imagebox = OffsetImage(logo, zoom=0.1)
-        ab = AnnotationBbox(
-            imagebox,
-            (0.98, 0.02),  # bottom-right in axes coords
-            xycoords=ax.transAxes,
-            frameon=False,
-            box_alignment=(1, 0),
-            zorder=0,
-        )
-        ax.add_artist(ab)
+        if show_logo:
+            imagebox = OffsetImage(logo, zoom=0.1)
+            ab = AnnotationBbox(
+                imagebox,
+                (0.98, 0.02),  # bottom-right in axes coords
+                xycoords=ax.transAxes,
+                frameon=False,
+                box_alignment=(1, 0),
+                zorder=0,
+            )
+            ax.add_artist(ab)
 
+    # Hide repeated date labels while retaining aligned ticks across panels.
     for ax in [ax_Bx, ax_By]:
         ax.sharex(ax_Bz)
         ax.tick_params(labelbottom=False, which='both', bottom=True, top=True, left=True, right=True)
-    
+
+    # Show hour labels only on the bottom panel.
+    ax_Bz.xaxis.set_minor_locator(mdates.HourLocator(byhour=[0, 6, 12, 18]))
+    ax_Bz.xaxis.set_minor_formatter(mdates.DateFormatter('%H'))
+    ax_Bz.tick_params(axis='x', which='major', labelrotation=0, pad=15)
+    ax_Bz.tick_params(axis='x', which='minor', labelrotation=0, pad=2)
+
     return fig, ax_Bx, ax_By, ax_Bz
 
 @enforce_types(
     data=object,
     logo_path=(str, Path, type(None)),
+    show_logo=bool,
     auto_xlim=bool,
 )
-def plot_dH(data, logo_path=None, auto_xlim=True):
+def plot_dH(data, logo_path=None, show_logo= False, auto_xlim=True):
     """
     Plot declination, horizontal intensity, and the first difference of H.
 
@@ -430,8 +451,11 @@ def plot_dH(data, logo_path=None, auto_xlim=True):
         column access for ``time``, ``x``, and ``y``.
     logo_path : str or pathlib.Path or None, optional
         Optional path to a logo image to place in the lower-right corner of
-        each subplot. When omitted, the packaged MagIE logo is used.
-    auto_xlim : bool, optional
+        each subplot. When omitted, the packaged MagIE logo is used if
+        ``show_logo`` is true.
+    show_logo : bool, default False
+        Whether to add the MagIE logo overlay to each subplot.
+    auto_xlim : bool, default True
         When ``True``, set each subplot x-axis to the day-bounded extent of
         the provided time series.
 
@@ -448,7 +472,9 @@ def plot_dH(data, logo_path=None, auto_xlim=True):
 
     data = data.copy()  # avoid mutating caller data
     data= data.filter()
-    fig= plt.figure(figsize=(30, 15))
+
+    # Use one shared figure with vertically stacked axes for derived quantities.
+    fig= plt.figure(figsize=(400/96, 378/96))
     gs= fig.add_gridspec(3, 1, hspace=0.2)
     ax_D= fig.add_subplot(gs[0])
     ax_H= fig.add_subplot(gs[1])
@@ -456,8 +482,11 @@ def plot_dH(data, logo_path=None, auto_xlim=True):
     colors = plt.rcParams["axes.prop_cycle"].by_key()["color"]
     H = np.sqrt(data['x']**2 + data['y']**2)
 
+    # First difference of H at the native cadence; the label assumes minute data.
     dHdt = np.diff(H, prepend=np.nan)
 
+    # Declination uses a clipped ratio to avoid invalid arcsin values from
+    # floating-point noise or zero horizontal field strength.
     ratio = np.divide(
         data['y'],
         H,
@@ -466,56 +495,71 @@ def plot_dH(data, logo_path=None, auto_xlim=True):
     )
     D = np.degrees(np.arcsin(np.clip(ratio, -1.0, 1.0)))
 
+    if show_logo:
+        # Load the logo once and reuse it on each derived-data subplot.
+        if logo_path is None:
+            with get_asset_path("MagIE-logo.png") as default_logo_path:
+                logo = mpimg.imread(default_logo_path)
+        else:
+            logo = mpimg.imread(logo_path)
 
-
-
-
-    if logo_path is None:
-        with get_asset_path("MagIE-logo.png") as default_logo_path:
-            logo = mpimg.imread(default_logo_path)
-    else:
-        logo = mpimg.imread(logo_path)
-
-    logo[..., :3] = 1.0 - logo[..., :3]  # invert RGB, keep alpha
+        logo[..., :3] = 1.0 - logo[..., :3]  # invert RGB, keep alpha
     for ax, col, color in zip([ax_D, ax_H, ax_dH], [D, H, dHdt], colors):
-        ax.tick_params(axis='both', which='major', labelsize=20)
-        ax.grid(True, which='both', linestyle='--', alpha=1, lw=1)
-        # --- Major ticks: days ---
-        ax.xaxis.set_major_locator(mdates.DayLocator())
-        ax.xaxis.set_major_formatter(mdates.DateFormatter('%H:%M\n%d-%b-%Y'))
+        ax.tick_params(axis='both', which='major')
+        # Reset grid state before applying separate x/y grid styles.
+        ax.grid(False)
 
-        # --- Minor ticks: hours ---
+        # Vertical grid lines mark six-hour minor ticks.
+        ax.grid(True, which='minor', axis='x', linestyle='--', alpha=1, lw=1)
+
+        # Horizontal grid lines track each panel's y-axis scale.
+        ax.grid(True, which='major', axis='y', linestyle='--', alpha=1, lw=1)
+
         ax.xaxis.set_minor_locator(mdates.HourLocator(byhour=[0, 6, 12, 18]))
-        ax.xaxis.set_minor_formatter(mdates.DateFormatter('%H:%M'))
 
-        # Styling
-        ax.tick_params(axis='x', which='major', labelsize=25)
-        ax.tick_params(axis='y', which='major', labelsize=25)
+        ax.xaxis.set_major_locator(
+            mdates.HourLocator(byhour=[11])  # noon
+        )
 
-        ax.tick_params(axis='x', which='minor', labelsize=25)
+        ax.xaxis.set_major_formatter(
+            mdates.DateFormatter('%d-%b-%Y')
+        )
+
 
         if auto_xlim:
             ax.set_xlim(np.array(data['time']).astype('datetime64[D]').min()+np.timedelta64(1, 'D'), np.array(data['time']).astype('datetime64[D]').max()+np.timedelta64(1, 'D'))
         ax.plot(data['time'], col, color=color)
         ax.yaxis.set_major_locator(MaxNLocator(nbins=4))
+        # Emphasize day boundaries over the six-hour minor grid.
         for date in np.unique(np.array(data['time']).astype('datetime64[D]')): ax.axvline(date, color='black')
-        imagebox = OffsetImage(logo, zoom=0.1)
-        ab = AnnotationBbox(
-            imagebox,
-            (0.98, 0.02),  # bottom-right in axes coords
-            xycoords=ax.transAxes,
-            frameon=False,
-            box_alignment=(1, 0),
-            zorder=0,
-        )
-        ax.add_artist(ab)
+        if show_logo:
+            imagebox = OffsetImage(logo, zoom=0.1)
+            ab = AnnotationBbox(
+                imagebox,
+                (0.98, 0.02),  # bottom-right in axes coords
+                xycoords=ax.transAxes,
+                frameon=False,
+                box_alignment=(1, 0),
+                zorder=0,
+            )
+            ax.add_artist(ab)
 
+    # Hide repeated date labels while retaining aligned ticks across panels.
     for ax in [ax_D, ax_H]:
         ax.sharex(ax_dH)
         ax.tick_params(labelbottom=False, which='both', bottom=True, top=True, left=True, right=True)
-    ax_D.set_ylabel('D [degress]', size=40)
-    ax_H.set_ylabel('H [nT]', size=40)
-    ax_dH.set_ylabel(r'$\frac{dH}{dt}$ [nT/min]', size=40)
+
+    # Show hour labels only on the bottom panel.
+    ax_dH.xaxis.set_minor_locator(mdates.HourLocator(byhour=[0, 6, 12, 18]))
+    ax_dH.xaxis.set_minor_formatter(mdates.DateFormatter('%H'))
+
+
+    ax_dH.tick_params(axis='x', which='major', labelrotation=0, pad=15)
+    ax_dH.tick_params(axis='x', which='minor', labelrotation=0, pad=2)
+    ax_D.set_ylabel('D (degrees)')
+    ax_H.set_ylabel('H (nT)')
+    ax_dH.set_ylabel(r'$\frac{dH}{dt}$ (nT/min)')
     ymax = np.nanmax(np.abs(dHdt))
+    # Keep positive and negative dH excursions visually comparable.
     ax_dH.set_ylim(-ymax, ymax)
     return fig, ax_D, ax_H, ax_dH
