@@ -452,7 +452,7 @@ def plot_k(K_data, logo_path=None, auto_xlim=True, colorbar=True, show_logo=Fals
     ax.xaxis.set_minor_locator(mdates.HourLocator(byhour=[0, 6, 12, 18]))
     ax.xaxis.set_minor_formatter(mdates.DateFormatter('%H:%M'))
     ax.tick_params(axis='x', which='major', labelrotation=0, pad=15)
-    ax.tick_params(axis='x', which='minor', labelrotation=-35, pad=2)
+    ax.tick_params(axis='x', which='minor', labelrotation=0, pad=2)
     # ax.minorticks_on(axis='x')
     # ax.spines[['top', 'right']].set_visible(False)
     xmin, xmax= np.array(K_data['time']).astype('datetime64[D]').min()+np.timedelta64(1, 'D'), np.array(K_data['time']).astype('datetime64[D]').max()+np.timedelta64(1, 'D')
