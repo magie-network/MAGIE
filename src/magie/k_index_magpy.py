@@ -1009,7 +1009,7 @@ def daily_K_plots_full_archive(
             K= pd.concat(pd.read_csv(file, parse_dates=["time"]) for file in files)
             K.rename(columns={'K_index': 'var1'}, inplace=True)
             
-            fig, ax = plot_k(K, colorbar=False, show_logo=False)
+            fig, ax = plot_k(K, colorbar=False, show_logo=False, auto_xlim=False)
             ax.set_xlim(date - pd.Timedelta(days=2), date + pd.Timedelta(days=1))
             met = get_site_metadata('dun')
             fig.suptitle(f"MagIE {met['station_name']} Local K Index", y=.95)
