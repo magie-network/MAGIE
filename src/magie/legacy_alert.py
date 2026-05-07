@@ -404,7 +404,7 @@ def alert(template: str = './email_templates/legacy_template.html',
             # when the latest K value does not cross the alert threshold.
             kvals = live_k(now_time, site_code=site, path_prefix=path_prefix)
             fig, ax = plot_k(kvals, colorbar=False, show_logo=False)
-            met = get_site_metadata('dun')
+            met = get_site_metadata(site)
             fig.suptitle(f"MagIE {met['station_name']} Local K Index", y=.95)
             ax.set_ylabel('K Index')
             fig.text(.6, -0.035, f"Plot Updated {now_time.floor('1s')} UT")
