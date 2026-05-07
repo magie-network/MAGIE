@@ -1020,7 +1020,7 @@ def daily_K_plots_full_archive(
             output_dir = Path(output_path_builder(date.strftime("%Y-%m-%d").split("-")))
             output_dir.mkdir(parents=True, exist_ok=True)
             output_file = output_dir / f"{site_code}{date:%Y%m%d}_kindex_magpy.png"
-            fig.savefig(output_file)
+            fig.savefig(output_file, dpi=300, bbox_inches='tight')
             plt.close(fig)
             return {
                 "date": date,
