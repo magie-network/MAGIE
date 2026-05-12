@@ -124,8 +124,8 @@ def compute_H(df, obs):
 @enforce_types(df=pd.DataFrame, obs=str, hours=(int, float), freq=str)
 def means_calc(df, obs, hours, freq):
     """
-    Computes mean of OBSX, OBSY, OBSZ, OBSH within an integer hour time-window
-    for either one-minute or one-second data.
+    Computes mean of OBSX, OBSY, OBSZ, OBSH within
+    an integer hour time-window for one-minute or one-second data.
     Time-window represents geomagnetically quiet time pre-storm.
 
     Parameters:
