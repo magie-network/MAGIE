@@ -478,8 +478,11 @@ def get_GIN_data(dataStartDate, iagaSites, dataDuration, orientation,
     return dfSites
 
 
-@enforce_types(printHeader=bool)
-def get_SAGE_variometer(printHeader=False):
+@enforce_types(
+        passwordDir=(str, Path),
+        printHeader=bool,
+        )
+def get_SAGE_variometer(passwordDir, printHeader=False):
     """
     Returns the latest 24 hours live 1s Data from Florence Court (FLO)
     British Geological Survey's SWIMMR Activities in Ground Effects (SAGE)
@@ -504,7 +507,11 @@ def get_SAGE_variometer(printHeader=False):
 
     Parameters:
     -----------
-    printHeader:boolean optional
+    passwordDir: str or Path
+        load_dotenv fetches the username and password from the .env file
+        stored in <passwordDir> with matching keynames
+
+    printHeader: boolean optional
 
     Raises:
     -------
@@ -526,9 +533,7 @@ def get_SAGE_variometer(printHeader=False):
         df = get_SAGE_variometer()
     """
     url = "https://geomag.bgs.ac.uk/SpaceWeather/fl_24hrdata.out"
-    # fetch the username and password from the .env file stored
-    # in the same path as this script i.e. <src/magie/>
-    load_dotenv()
+    load_dotenv(os.path.join(passwordDir, ".env"))
     username = os.getenv("username")
     password = os.getenv("password")
 
@@ -637,7 +642,7 @@ def daily_file_template(day, freq="1s", flag=99999.00):
 
 @enforce_types(
     df=pd.DataFrame,
-    baseDir=str,
+    baseDir=Path,
     freq=str,
     obs=str,
     flag=(int, float),
@@ -658,13 +663,13 @@ def save_SAGE_data(df, baseDir, freq='1s', obs="flo", flag=99999.00,
 
     Parameters:
     -----------
-    baseDir: str
-        base directory for daily variometer files,
-        actual files live in its sub-folders
-
     df (pandas.DataFrame): data indexed with timestamps
         in %Y/%m/%d %H:%M:%S format; E.g: "2026/01/09 12:30:00"
         Columns in the order of: ['Index#', "Bx", "By", "Bz"]
+
+    baseDir: Path
+        base directory for daily variometer files,
+        actual files live in its sub-folders
 
     freq: str optional
         defaults to one-second Florence Court (FLO) data part of SAGE.
@@ -696,9 +701,9 @@ def save_SAGE_data(df, baseDir, freq='1s', obs="flo", flag=99999.00,
     --------
         save_BGS_data(df, outputDir, freq='1s', obs="flo", flag=99999.00)
     """
-    if not baseDir.exists():
+    if not baseDir.is_dir():
         raise FileNotFoundError(
-            f"Output directory does not exist: {baseDir}"
+            f"Output parent directory does not exist: {baseDir}"
             )
 
     cols = ["Bx", "By", "Bz"]
@@ -717,7 +722,10 @@ def save_SAGE_data(df, baseDir, freq='1s', obs="flo", flag=99999.00,
             / "txt"
 
         targetDir.mkdir(parents=True, exist_ok=True)
-
+        if not targetDir.is_dir():
+            raise FileNotFoundError(
+                f"Failed to create directory: {targetDir}"
+                )
         # Save file there
         filePath = targetDir / fname
 
