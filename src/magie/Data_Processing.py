@@ -92,6 +92,7 @@ def calc_second_derivatives(df, obs, gap_threshold=120):
 def compute_H(df, obs):
     """
     Compute H = sqrt(X^2 + Y^2)
+    Checks whether X Y and H columns exist before computing H
 
     Parameters:
     -----------
@@ -108,15 +109,17 @@ def compute_H(df, obs):
     Returns:
     --------
     df: pandas.DataFrame
-        H appended as list
+        input DataFrame with col_H appended as a new column
     """
-    col_X = f"{obs.upper()}{"X"}"
-    col_Y = f"{obs.upper()}{"Y"}"
-    col_H = f"{obs.upper()}{"H"}"
-    df_x = df[col_X]
-    df_y = df[col_Y]
-    H = np.sqrt(df_x**2 + df_y**2)
-    df[col_H] = H
+    col_X = f"{obs.upper()}X"
+    col_Y = f"{obs.upper()}Y"
+    col_H = f"{obs.upper()}H"
+    for col in [col_X, col_Y]:
+        if col not in df.columns:
+            raise KeyError(f"Column '{col}' not found in DataFrame.")
+
+    if col_H not in df.columns:
+        df[col_H] = np.sqrt(df[col_X]**2 + df[col_Y]**2)
 
     return df
 
