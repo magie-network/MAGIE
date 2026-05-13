@@ -348,42 +348,52 @@ def live_k(now_time, site_code, path_prefix='https://data.magie.ie/', site_metad
 
 @enforce_types(
     K_data=(DataStream, pd.DataFrame),
+    logo_path=(str, Path, type(None)),
+    auto_xlim=bool,
+    colorbar=bool,
+    show_logo=bool,
 )
-def plot_k(K_data, logo_path=None, auto_xlim=True):
+def plot_k(K_data, logo_path=None, auto_xlim=True, colorbar=True, show_logo=False):
     """
     Plot K-index values as colored 3-hour bars with a qualitative legend.
 
     Parameters
     ----------
-    K_data : pandas.DataFrame
-        Must include ``K_index`` and a datetime index or ``Date_UTC`` column.
-    logo_path : str, optional
+    K_data : magpy.stream.DataStream or pandas.DataFrame
+        K-index data to plot. Must provide ``time`` values and ``var1`` K-index
+        values, as returned by the MagPy K-index calculation.
+    logo_path : str or pathlib.Path, optional
         Path to the logo image to be displayed on the plot. When omitted, the
-        packaged ``MagIE-logo.png`` asset is used.
+        packaged ``MagIE-logo.png`` asset is used if ``show_logo`` is true.
     auto_xlim : bool, default True
         Whether to automatically set the x-axis limits.
-
+    colorbar : bool, default True
+        Whether to add the horizontal qualitative K-index color legend.
+    show_logo : bool, default False
+        Whether to add the MagIE logo overlay to the figure.
 
     Returns
     -------
     tuple
-        ``(fig, ax, cax)`` Matplotlib objects for further customization.
+        ``(fig, ax, cax)`` when ``colorbar`` is true, otherwise ``(fig, ax)``.
 
     Examples
     --------
     >>> idx = pd.date_range('2024-01-01', periods=4, freq='3h')
-    >>> df = pd.DataFrame({'K_index': [1, 2, 3, 4]}, index=idx)
-    >>> fig, ax, cax = plot_K(df)
+    >>> df = pd.DataFrame({'time': idx, 'var1': [1, 2, 3, 4]})
+    >>> fig, ax, cax = plot_k(df)
     """
     K_data = K_data.copy()  # avoid mutating caller data
     # K_data["K_index"] = K_data["K_index"].replace(0, 0.2)  # lift zeros for visibility
-    fig= plt.figure(figsize=(30, 15))
-    gs= fig.add_gridspec(2, 1, height_ratios=[1, .1], hspace=0.2)
+    fig= plt.figure(figsize=(900/96, 400/96))
+    if colorbar:
+        gs= fig.add_gridspec(2, 1, height_ratios=[1, .1], hspace=0.2)
+        cax= fig.add_subplot(gs[1, 0])
+    else:
+        gs= fig.add_gridspec(1, 1)
     ax= fig.add_subplot(gs[0, 0])
-    cax= fig.add_subplot(gs[1, 0])
 
-    # 1. Define the colours for each category (Quiet -> Severe Storm)
-
+    # Map each K-index range to the operational category colours.
     K_cmap = ListedColormap([
         'blue',      # Quiet: 0-1
         'cyan',      # Unsettled: 2-3
@@ -393,76 +403,85 @@ def plot_k(K_data, logo_path=None, auto_xlim=True):
         'magenta'    # Severe Storm: 8-9
     ])
 
-    # 2. Define the boundaries between categories
+    # Boundaries group K values into the same ranges shown in the legend.
     bounds = [0, 2, 4, 5, 6, 8, 10]   # right edge is exclusive by default
     norm = BoundaryNorm(bounds, K_cmap.N)
 
-    # Three-hour bars colored by category
+    # Draw each three-hour K bin as a colored bar, aligned to its start time.
     bars= ax.bar(np.array(K_data['time']).astype('datetime64[ns]'), K_data['var1'], edgecolor='black', width=np.timedelta64(3, 'h'),
            color=K_cmap(norm(K_data['var1'])), align='edge', lw=2, zorder=4)
     for bar in bars:
         x = bar.get_x()
         w = bar.get_width()
         y = bar.get_height()
-        ax.hlines(
-            y,
-            x,
-            x + w,
-            colors=bar.get_facecolor(),
-            linewidth=5,
-            zorder=3
-        )
-    cbar=fig.colorbar(plt.cm.ScalarMappable(norm=norm, cmap=K_cmap), cax=cax, orientation='horizontal',
-                # ticks=[1, 3, 4.5, 5.5, 7, 9.0],
-                )
-    cbar.ax.set_xticks([])
+        if y==0:
+            ax.hlines(
+                y+.01,
+                x,
+                x + w,
+                colors=bar.get_facecolor(),
+                linewidth=2,
+                zorder=3
+            )
+
     ax.set_yticks(range(0, 10))
-    ax.tick_params(axis='both', which='major', labelsize=20)
-    ax.grid(True, which='both', linestyle='--', alpha=1, lw=1)
-    for x, t in zip([1, 3, 4.5, 5.5, 7, 9.0], ['Quiet\n0-1', 'Unsettled\n2-3', 'Active\n4', 'Minor Storm\n5', 'Major Storm\n6-7', 'Severe Storm\n8-9']):
-        cax.text(x, .5, t, fontsize=20, verticalalignment='center', ha='center', bbox=dict(facecolor='white', alpha=0.5))
-    # # --- Major ticks every day ---
-    # ax.xaxis.set_major_locator(mdates.DayLocator())
-    # ax.xaxis.set_major_formatter(mdates.DateFormatter('%Y-%m-%d'))  # or '%d %b'
+    # Reset grid state before applying separate x/y grid styles.
+    ax.grid(False)
 
-    # # --- Minor ticks every 3 hours ---
-    # ax.xaxis.set_minor_locator(mdates.HourLocator(interval=3))
+    # Vertical grid lines mark six-hour minor ticks.
+    ax.grid(True, which='minor', axis='x', linestyle='--', alpha=1, lw=1)
 
-    # --- Major ticks: days ---
-    ax.xaxis.set_major_locator(mdates.DayLocator())
-    ax.xaxis.set_major_formatter(mdates.DateFormatter('%H:%M\n%d-%b-%Y'))
+    # Horizontal grid lines track the integer K-index values.
+    ax.grid(True, which='major', axis='y', linestyle='--', alpha=1, lw=1)
+    if colorbar:
+        cbar=fig.colorbar(plt.cm.ScalarMappable(norm=norm, cmap=K_cmap), cax=cax, orientation='horizontal',
+                    # ticks=[1, 3, 4.5, 5.5, 7, 9.0],
+                    )
+        cbar.ax.set_xticks([])
+        for x, t in zip([1, 3, 4.5, 5.5, 7, 9.0], ['Quiet\n0-1', 'Unsettled\n2-3', 'Active\n4', 'Minor Storm\n5', 'Major Storm\n6-7', 'Severe Storm\n8-9']):
+            cax.text(x, .5, t, fontsize=20, verticalalignment='center', ha='center', bbox=dict(facecolor='white', alpha=0.5))
 
-    # --- Minor ticks: hours ---
+    ax.xaxis.set_major_locator(
+        mdates.HourLocator(byhour=[11])  # noon
+    )
+
+    ax.xaxis.set_major_formatter(
+        mdates.DateFormatter('%d-%b-%Y')
+    )
+
     ax.xaxis.set_minor_locator(mdates.HourLocator(byhour=[0, 6, 12, 18]))
     ax.xaxis.set_minor_formatter(mdates.DateFormatter('%H:%M'))
-
-    # Styling
-    ax.tick_params(axis='x', which='major', labelsize=25)
-    ax.tick_params(axis='y', which='major', labelsize=25)
-
-    ax.tick_params(axis='x', which='minor', labelsize=25)
+    ax.tick_params(axis='x', which='major', labelrotation=0, pad=15)
+    ax.tick_params(axis='x', which='minor', labelrotation=0, pad=2)
     # ax.minorticks_on(axis='x')
-    ax.spines[['top', 'right']].set_visible(False)
+    # ax.spines[['top', 'right']].set_visible(False)
+    xmin, xmax= np.array(K_data['time']).astype('datetime64[D]').min()+np.timedelta64(1, 'D'), np.array(K_data['time']).astype('datetime64[D]').max()+np.timedelta64(1, 'D')
     if auto_xlim :
         ax.set_xlim(np.array(K_data['time']).astype('datetime64[D]').min()+np.timedelta64(1, 'D'), np.array(K_data['time']).astype('datetime64[D]').max()+np.timedelta64(1, 'D'))
+    # Emphasize day boundaries over the six-hour minor grid.
+    for t in np.arange(xmin, xmax-np.timedelta64(1, 'D'), np.timedelta64(1, 'D')) +np.timedelta64(1, 'D'):
+        ax.axvline(t, color='black', zorder=10)
     ax.set_ylim(-.05, 9.2)
-    if logo_path is None:
-        with get_asset_path("MagIE-logo.png") as default_logo_path:
-            logo = mpimg.imread(default_logo_path)
+    if show_logo:
+        if logo_path is None:
+            with get_asset_path("MagIE-logo.png") as default_logo_path:
+                logo = mpimg.imread(default_logo_path)
+        else:
+            logo = mpimg.imread(logo_path)
+        logo[..., :3] = 1.0 - logo[..., :3]  # invert RGB, keep alpha
+        imagebox = OffsetImage(logo, zoom=0.3)
+        ab = AnnotationBbox(
+            imagebox,
+            (0.78, 0.6),            # bottom-right in figure coords
+            xycoords="figure fraction",
+            frameon=False,
+            box_alignment=(1, 0),
+        )
+        logo= fig.add_artist(ab)
+    if colorbar:
+        return fig, ax, cax
     else:
-        logo = mpimg.imread(logo_path)
-    logo[..., :3] = 1.0 - logo[..., :3]  # invert RGB, keep alpha
-    imagebox = OffsetImage(logo, zoom=0.3)
-    ab = AnnotationBbox(
-        imagebox,
-        (0.78, 0.6),            # bottom-right in figure coords
-        xycoords="figure fraction",
-        frameon=False,
-        box_alignment=(1, 0),
-    )
-    logo= fig.add_artist(ab)
-
-    return fig, ax, cax
+        return fig, ax
 
 @enforce_types(data=DataStream, column=str)
 def _datastream_column_to_array(data, column):
@@ -989,16 +1008,19 @@ def daily_K_plots_full_archive(
             
             K= pd.concat(pd.read_csv(file, parse_dates=["time"]) for file in files)
             K.rename(columns={'K_index': 'var1'}, inplace=True)
-            fig, ax, cax = plot_k(K, logo_path=logo_path, auto_xlim=False)
-            ax.set_xlim(date - pd.Timedelta(days=2), date)
+            
+            fig, ax = plot_k(K, colorbar=False, show_logo=False, auto_xlim=False)
+            ax.set_xlim(date - pd.Timedelta(days=2), date + pd.Timedelta(days=1))
             met = get_site_metadata(site_code)
-            fig.suptitle(f"{met['station_name']} 3-Day Local K Index", fontsize=80)
-            ax.set_ylabel('K Index (0-9)', size=30)
+            fig.suptitle(f"MagIE {met['station_name']} Local K Index", y=.95)
+            ax.set_ylabel('K Index')
+            fig.set_dpi(96)
+            fig.canvas.draw()
 
             output_dir = Path(output_path_builder(date.strftime("%Y-%m-%d").split("-")))
             output_dir.mkdir(parents=True, exist_ok=True)
             output_file = output_dir / f"{site_code}{date:%Y%m%d}_kindex_magpy.png"
-            fig.savefig(output_file)
+            fig.savefig(output_file, dpi=300, bbox_inches='tight')
             plt.close(fig)
             return {
                 "date": date,

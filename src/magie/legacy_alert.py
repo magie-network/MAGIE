@@ -317,13 +317,15 @@ def validate_alert_paths(
     alert_log_path=str,
     verbose=bool,
     path_prefix=str,
+    subject=str,
 )
 def alert(template: str = './email_templates/legacy_template.html',
           email_config: str = './email_config.toml', recipients: str = './recipients.txt',
           png_save_path: str = './magnetometer_live/', sites: list[str] = ['dun', 'val'],
           png_file_name: Callable[[str], str] = lambda site: f"{site}_kindex.png",
           alert_threshold: int = 6, mastodon_config: str | Path | None = None, alert_log_path: str = "./alert_log.json",
-          verbose: bool = True, path_prefix: str = 'https://data.magie.ie/') -> None:
+          verbose: bool = True, path_prefix: str = 'https://data.magie.ie/',
+          subject: str = "MagIE Magnetic Disturbance Alert") -> None:
     """
     Generate and dispatch legacy geomagnetic alert notifications.
 
@@ -359,6 +361,8 @@ def alert(template: str = './email_templates/legacy_template.html',
         Data source prefix passed to ``live_k``. The default HTTPS prefix
         downloads archived data, while a local folder prefix reads from local
         ``YYYY/MM/DD/txt/`` directories instead.
+    subject : str, optional
+        Subject line used for the alert email.
 
     Returns
     -------
@@ -381,6 +385,9 @@ def alert(template: str = './email_templates/legacy_template.html',
     alert_log_path = paths["alert_log_path"]
     mastodon_config_path = paths.get("mastodon_config")
 
+    # The legacy HTML template contains one repeatable SITE_BLOCK section.
+    # Build one rendered block per alerting site, then stitch them back into
+    # the full email just before sending.
     raw_template = template_path.read_text(encoding="utf-8")
     site_block_template_text = extract_site_block(raw_template)
     site_blocks_rendered: list[str] = []
@@ -388,14 +395,20 @@ def alert(template: str = './email_templates/legacy_template.html',
     with tempfile.TemporaryDirectory(prefix="magie_alert_") as tmpdir:
         tmpdir = Path(tmpdir)
         Ks = []
+        site_alerts_triggered = []
+        # Log entries are intentionally deferred until after the email send
+        # succeeds, so a transient SMTP failure does not suppress the next run.
+        pending_log_entries = []
         for site in sites:
+            # Fetch the live site data and refresh the public PNG plot even
+            # when the latest K value does not cross the alert threshold.
             kvals = live_k(now_time, site_code=site, path_prefix=path_prefix)
-            fig, ax, cax = plot_k(kvals)
+            fig, ax = plot_k(kvals, colorbar=False, show_logo=False)
             met = get_site_metadata(site)
-            fig.suptitle(f"{met['station_name']} 3-Day Local K Index", fontsize=80)
-            ax.set_ylabel('K Index (0-9)', size=30)
-            fig.text(.6, .15, f"Plot Updated {now_time.floor('1s')} UT", size=25)
-            cax.remove()
+            fig.suptitle(f"MagIE {met['station_name']} Local K Index", y=.95)
+            ax.set_ylabel('K Index')
+            fig.text(.6, -0.035, f"Plot Updated {now_time.floor('1s')} UT")
+            fig.set_dpi(96)
             fig.canvas.draw()
             site_png_file_name = png_file_name(site)
             if not isinstance(site_png_file_name, str):
@@ -408,6 +421,8 @@ def alert(template: str = './email_templates/legacy_template.html',
             plt.close(fig)
             kvals = pd.DataFrame({'K_index' : kvals['var1']}, index= kvals['time'])
             kvals = kvals.dropna().iloc[-1]
+            # Only alert on recent, above-threshold values that are not
+            # already recorded in the deduplication log.
             if (
                 kvals.name < now_time - pd.Timedelta(6.5, 'h')
                 or kvals['K_index'] < alert_threshold
@@ -415,6 +430,7 @@ def alert(template: str = './email_templates/legacy_template.html',
             ):
                 continue
             Ks.append(int(kvals['K_index']))
+            site_alerts_triggered.append(site)
             if verbose:
                 print("Alert condition met, preparing email...")
             html_inputs = {}
@@ -432,10 +448,16 @@ def alert(template: str = './email_templates/legacy_template.html',
             rendered_block = render_html_template(str(site_block_tmp), html_inputs)
             site_blocks_rendered.append(rendered_block)
 
+            # Keep the archive link tied to the alert timestamp rather than
+            # wall-clock time, since the most recent K bin can lag the run.
             archive_url = build_archive_url(kvals.name)
-            save_log(kvals.name, int(kvals['K_index']), met['station_name'], path=alert_log_path)
+            pending_log_entries.append(
+                (kvals.name, int(kvals['K_index']), met['station_name'])
+            )
 
         if site_blocks_rendered:
+            # Replace the template's placeholder block with all alerting sites
+            # so multiple stations are sent in a single email.
             combined_blocks_html = "\n".join(site_blocks_rendered)
 
             stitched_template = replace_site_block(raw_template, combined_blocks_html)
@@ -454,29 +476,32 @@ def alert(template: str = './email_templates/legacy_template.html',
                 password=cfg["password"],
                 from_addr=cfg["from_addr"],
                 to_addrs=recipients,
-                subject="MagIE Aurora Alert",
+                subject=subject,
                 html_content=html_email,
                 use_starttls=cfg["use_starttls"],
             )
 
+            # From this point on, the email alert has been handed to SMTP, so
+            # it is safe to mark these site/timestamp pairs as sent.
+            for timestamp, k_value, station_name in pending_log_entries:
+                save_log(timestamp, k_value, station_name, path=alert_log_path)
+
             if mastodon_config_path is not None:
                 from mastodon import Mastodon
-                # Initialize Mastodon client
                 mastodon = Mastodon(**load_mastodon_config(mastodon_config_path))
 
-                # Paths to your images
+                # Attach only the plots for sites included in this alert, not
+                # every configured site from the run.
                 image_paths = [
-                        png_dir / png_file_name(site) for site in sites
+                        png_dir / png_file_name(site) for site in site_alerts_triggered
                 ]
 
-                # Upload images
                 media_ids = []
-                for path, site in zip(image_paths, sites):
+                for path, site in zip(image_paths, site_alerts_triggered):
                     media = mastodon.media_post(path, focus=(0.9, .3),
                                                 description = f"K index  {get_site_metadata(site)['station_name']}")
                     media_ids.append(media["id"])
 
-                # Post status with images
                 status = 'MagIE Geomagnetic Alert: K-'+str(max(Ks))+f' ({classify_storm(max(Ks))})'+' Check out https://magie.ie/data for more information #Alert #Aurora #AuroraBorealis #NorthernLights #MagIE #Ireland #MastoDaoine'
                 mastodon.status_post(status, media_ids=media_ids)
 
