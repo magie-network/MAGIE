@@ -1,10 +1,141 @@
 import numpy as np
 import matplotlib.pyplot as plt
 import matplotlib.cm as cm
+import matplotlib.colors as mcolors
 from collections.abc import Callable
 from pathlib import Path
+from typing import Any
 
 from magie.utils import enforce_types, get_asset_path
+
+
+ColorLike = str | tuple[float, ...] | list[float] | np.ndarray
+
+
+@enforce_types(color=(str, tuple, list, np.ndarray))
+def _relative_luminance(color: ColorLike) -> float:
+    """
+    Return WCAG relative luminance for any Matplotlib color.
+
+    Parameters
+    ----------
+    color : str, tuple, list, or numpy.ndarray
+        Color accepted by ``matplotlib.colors.to_rgb``.
+
+    Returns
+    -------
+    float
+        Relative luminance in the range 0 to 1.
+    """
+    rgb = np.asarray(mcolors.to_rgb(color))
+    # Convert sRGB to linear RGB before applying the perceptual luminance weights.
+    return float(
+        np.where(
+            rgb <= 0.03928,
+            rgb / 12.92,
+            ((rgb + 0.055) / 1.055) ** 2.4,
+        )
+        @ np.array([0.2126, 0.7152, 0.0722])
+    )
+
+
+@enforce_types(
+    color=(str, tuple, list, np.ndarray),
+    background=(str, tuple, list, np.ndarray),
+)
+def _contrast_ratio(color: ColorLike, background: ColorLike) -> float:
+    """
+    Return the WCAG contrast ratio between two Matplotlib colors.
+
+    A value of 1 means no contrast; larger values are easier to distinguish.
+    """
+    fg_luminance = _relative_luminance(color)
+    bg_luminance = _relative_luminance(background)
+    lighter = max(fg_luminance, bg_luminance)
+    darker = min(fg_luminance, bg_luminance)
+    return (lighter + 0.05) / (darker + 0.05)
+
+
+@enforce_types(
+    color=(str, tuple, list, np.ndarray),
+    background=(str, tuple, list, np.ndarray),
+    min_contrast=(int, float),
+)
+def _adjust_color_for_contrast(
+    color: ColorLike,
+    background: ColorLike,
+    min_contrast: float = 3.0,
+) -> ColorLike:
+    """
+    Preserve hue while adjusting value until a color is readable.
+
+    Parameters
+    ----------
+    color : str, tuple, list, or numpy.ndarray
+        Foreground color accepted by Matplotlib.
+    background : str, tuple, list, or numpy.ndarray
+        Background color used for the contrast check.
+    min_contrast : int or float, optional
+        Minimum WCAG contrast ratio to target.
+
+    Returns
+    -------
+    str, tuple, list, or numpy.ndarray
+        Original color when it already meets the contrast target, otherwise a
+        hex color adjusted for readability.
+    """
+    if _contrast_ratio(color, background) >= min_contrast:
+        return color
+
+    # HSV lets us keep the user's chosen hue/saturation and only alter brightness.
+    hue, saturation, value = mcolors.rgb_to_hsv(mcolors.to_rgb(color))
+    bg_luminance = _relative_luminance(background)
+    # Darken colors on light backgrounds; lighten colors on dark backgrounds.
+    target_value = 0.15 if bg_luminance > 0.5 else 0.95
+
+    # Stop at the first brightness step that meets the requested contrast.
+    for candidate_value in np.linspace(value, target_value, 20):
+        candidate = mcolors.hsv_to_rgb((hue, saturation, candidate_value))
+        if _contrast_ratio(candidate, background) >= min_contrast:
+            return mcolors.to_hex(candidate)
+
+    # Last resort for colors that cannot reach the contrast target by value alone.
+    return "#595959" if bg_luminance > 0.5 else "#d9d9d9"
+
+
+@enforce_types(
+    background=(str, tuple, list, np.ndarray),
+    n=int,
+    min_contrast=(int, float),
+)
+def _component_line_colors(
+    background: ColorLike,
+    n: int = 3,
+    min_contrast: float = 3.0,
+) -> list[ColorLike]:
+    """
+    Return line colors from the active cycle adjusted for the axis background.
+
+    Parameters
+    ----------
+    background : str, tuple, list, or numpy.ndarray
+        Axis background color used for contrast checks.
+    n : int, optional
+        Number of colors to return.
+    min_contrast : int or float, optional
+        Minimum WCAG contrast ratio for each color.
+    """
+    colors = list(plt.rcParams["axes.prop_cycle"].by_key()["color"])
+    if not colors:
+        colors = list(plt.rcParamsDefault["axes.prop_cycle"].by_key()["color"])
+    # Repeat short cycles so callers can request any number of line colors.
+    while len(colors) < n:
+        colors.extend(colors)
+
+    return [
+        _adjust_color_for_contrast(color, background, min_contrast)
+        for color in colors[:n]
+    ]
 
 
 class ArgumentError(Exception):
@@ -12,7 +143,7 @@ class ArgumentError(Exception):
 
 
 @enforce_types(ax=object, url=str)
-def add_image(ax, url):
+def add_image(ax: Any, url: str) -> Any:
     """
     Download an image and attach it to a Matplotlib axis as an annotation artist.
 
@@ -32,7 +163,6 @@ def add_image(ax, url):
     from urllib.request import urlopen
     from PIL import Image
     import numpy as np
-    import matplotlib.pyplot as plt
     from matplotlib.offsetbox import OffsetImage, AnnotationBbox
     img_data = urlopen(url).read()
     img = Image.open(BytesIO(img_data)).convert("RGBA")
@@ -44,8 +174,16 @@ def add_image(ax, url):
     return ax.add_artist(ab)
 
 
-@enforce_types(val=(int, float, np.ndarray, list, tuple, np.number), norm=object, cmap=(str, object))
-def get_color(val, norm, cmap):
+@enforce_types(
+    val=(int, float, np.ndarray, list, tuple, np.number),
+    norm=object,
+    cmap=(str, object),
+)
+def get_color(
+    val: int | float | np.number | np.ndarray | list[Any] | tuple[Any, ...],
+    norm: Any,
+    cmap: str | Any,
+) -> tuple[float, float, float, float] | np.ndarray:
     """
     Return RGBA color values for scalar or array-like data.
 
@@ -79,7 +217,13 @@ def get_color(val, norm, cmap):
 
 
 @enforce_types(ax=object, grid=object, resolution=str, facecolor=str)
-def add_land(ax, grid, resolution='50m', facecolor='darkgreen', **kwargs):
+def add_land(
+    ax: Any,
+    grid: Any,
+    resolution: str = "50m",
+    facecolor: str = "darkgreen",
+    **kwargs: Any,
+) -> None:
     """
     Add land polygons to a map axis using projected coastlines from a grid object.
 
@@ -106,9 +250,8 @@ def add_land(ax, grid, resolution='50m', facecolor='darkgreen', **kwargs):
         x, y = cl
         if len(x) < 3:
             continue  # can't form a polygon
-        # Build a closed Path; assume each cl represents a coastline ring
+        # Build a closed path; each coastline entry is treated as a polygon ring.
         verts = np.column_stack([x, y])
-        # ensure closed
         if not (verts[0] == verts[-1]).all():
             verts = np.vstack([verts, verts[0]])
 
@@ -126,7 +269,12 @@ def add_land(ax, grid, resolution='50m', facecolor='darkgreen', **kwargs):
 
 
 @enforce_types(ax=object, grid=object, facecolor=str)
-def add_ocean(ax, grid, facecolor='#3498db', **kwargs):
+def add_ocean(
+    ax: Any,
+    grid: Any,
+    facecolor: str = "#3498db",
+    **kwargs: Any,
+) -> None:
     """
     Add a rectangular ocean background patch covering the full grid extent.
 
@@ -163,7 +311,17 @@ def add_ocean(ax, grid, facecolor='#3498db', **kwargs):
     x_splits=(list, str, type(None)),
     y_splits=(list, str, type(None)),
 )
-def contour_labels(contour, xpad=None, ypad=None, sides=['left', 'right'], rtol=.1, fmt=lambda x: f'{x}', x_splits=None, y_splits=None, **text_kwargs):
+def contour_labels(
+    contour: Any,
+    xpad: int | float | None = None,
+    ypad: int | float | None = None,
+    sides: list[str] | str = ["left", "right"],
+    rtol: int | float = 0.1,
+    fmt: Callable[[Any], str] = lambda x: f"{x}",
+    x_splits: list[str | None] | str | None = None,
+    y_splits: list[str | None] | str | None = None,
+    **text_kwargs: Any,
+) -> list[Any]:
     """
     Create contour labels positioned along the edges of a subplot.
 
@@ -197,7 +355,7 @@ def contour_labels(contour, xpad=None, ypad=None, sides=['left', 'right'], rtol=
     Raises
     ------
     ArgumentError
-        Raised in an argument is not usable.
+        Raised if an edge or split argument is not usable.
 
     Returns
     -------
@@ -220,6 +378,8 @@ def contour_labels(contour, xpad=None, ypad=None, sides=['left', 'right'], rtol=
         y_splits= [y_splits]*len(sides)
     labels= [[] for i in range(len(sides))]
     if hasattr(contour, "collections"):
+        # Matplotlib has exposed contour geometry through both collections and
+        # allsegs across versions; support either representation.
         level_paths = [
             (level, [path.vertices for path in collection.get_paths()])
             for collection, level in zip(contour.collections, contour.levels)
@@ -242,6 +402,7 @@ def contour_labels(contour, xpad=None, ypad=None, sides=['left', 'right'], rtol=
                     x= x[y>0]
                     y= y[y>0]
                 elif not y_split is None and ('<' in y_split or '>' in y_split):
+                    # Preserve the historical expression-filter interface.
                     x= x[eval(y_split)]
                     y= y[eval(y_split)]
                 elif not y_split is None:
@@ -263,6 +424,7 @@ def contour_labels(contour, xpad=None, ypad=None, sides=['left', 'right'], rtol=
                     x= x[y>0]
                     y= y[y>0]
                 elif not y_split is None and ('<' in y_split or '>' in y_split):
+                    # Preserve the historical expression-filter interface.
                     x= x[eval(y_split)]
                     y= y[eval(y_split)]
                 elif not y_split is None:
@@ -284,6 +446,7 @@ def contour_labels(contour, xpad=None, ypad=None, sides=['left', 'right'], rtol=
                     y= y[x>0]
                     x= x[x>0]
                 elif not x_split is None and ('<' in x_split or '>' in x_split):
+                    # Preserve the historical expression-filter interface.
                     y= y[eval(x_split)]
                     x= x[eval(x_split)]
                 elif not x_split is None:
@@ -305,6 +468,7 @@ def contour_labels(contour, xpad=None, ypad=None, sides=['left', 'right'], rtol=
                     y= y[x>0]
                     x= x[x>0]
                 elif not x_split is None and ('<' in x_split or '>' in x_split):
+                    # Preserve the historical expression-filter interface.
                     y= y[eval(x_split)]
                     x= x[eval(x_split)]
                 elif not x_split is None:
@@ -332,7 +496,12 @@ def contour_labels(contour, xpad=None, ypad=None, sides=['left', 'right'], rtol=
     show_logo=bool,
     auto_xlim=bool,
 )
-def plot_BxByBz(data, logo_path=None, show_logo= False, auto_xlim=True):
+def plot_BxByBz(
+    data: Any,
+    logo_path: str | Path | None = None,
+    show_logo: bool = False,
+    auto_xlim: bool = True,
+) -> tuple[Any, Any, Any, Any]:
     """
     Plot the X, Y, and Z magnetic field components as stacked time series.
 
@@ -371,7 +540,7 @@ def plot_BxByBz(data, logo_path=None, show_logo= False, auto_xlim=True):
     ax_Bx= fig.add_subplot(gs[0])
     ax_By= fig.add_subplot(gs[1])
     ax_Bz= fig.add_subplot(gs[2])
-    colors = plt.rcParams["axes.prop_cycle"].by_key()["color"]
+    colors = _component_line_colors(ax_Bx.get_facecolor())
 
     if show_logo:
         # Load the logo once and reuse it on each component subplot.
@@ -440,7 +609,12 @@ def plot_BxByBz(data, logo_path=None, show_logo= False, auto_xlim=True):
     show_logo=bool,
     auto_xlim=bool,
 )
-def plot_dH(data, logo_path=None, show_logo= False, auto_xlim=True):
+def plot_dH(
+    data: Any,
+    logo_path: str | Path | None = None,
+    show_logo: bool = False,
+    auto_xlim: bool = True,
+) -> tuple[Any, Any, Any, Any]:
     """
     Plot declination, horizontal intensity, and the first difference of H.
 
@@ -479,7 +653,7 @@ def plot_dH(data, logo_path=None, show_logo= False, auto_xlim=True):
     ax_D= fig.add_subplot(gs[0])
     ax_H= fig.add_subplot(gs[1])
     ax_dH= fig.add_subplot(gs[2])
-    colors = plt.rcParams["axes.prop_cycle"].by_key()["color"]
+    colors = _component_line_colors(ax_D.get_facecolor())
     H = np.sqrt(data['x']**2 + data['y']**2)
 
     # First difference of H at the native cadence; the label assumes minute data.
