@@ -310,7 +310,7 @@ def mag_filter(Bx,By,Bz):
         Bznew=[]
         for j in range(0,len(dF)-60,60):
             if max(dF[j:j+60])>10:
-                array=np.full(shape=60,fill_value=99999.99,dtype=np.float)
+                array=np.full(shape=60,fill_value=99999.99,dtype=float)
                 for k in array:
                     Bxnew.append(k)
                     Bynew.append(k)
@@ -2241,7 +2241,7 @@ if __name__=='__main__':
                 filename = file_list[i][1]
         
                 date1, time1, bx1, by1, bz1 = data_read(filename)
-                if k2_l == 'val' or 'dun':
+                if k2_l in ('val', 'dun'):
                     temp1 = np.loadtxt(filename, usecols = (5,), skiprows = 2)
                     
                 else:
@@ -2366,5 +2366,5 @@ if __name__=='__main__':
 
                 
             
-        except:
-            pass
+        except Exception as exc:
+            print(f"Error processing {sitefull_name}: {type(exc).__name__}: {exc}")

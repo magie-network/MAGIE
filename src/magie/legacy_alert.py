@@ -402,23 +402,27 @@ def alert(template: str = './email_templates/legacy_template.html',
         for site in sites:
             # Fetch the live site data and refresh the public PNG plot even
             # when the latest K value does not cross the alert threshold.
-            kvals = live_k(now_time, site_code=site, path_prefix=path_prefix)
-            fig, ax = plot_k(kvals, colorbar=False, show_logo=False)
-            met = get_site_metadata(site)
-            fig.suptitle(f"MagIE {met['station_name']} Local K Index", y=.95)
-            ax.set_ylabel('K Index')
-            fig.text(.6, -0.035, f"Plot Updated {now_time.floor('1s')} UT")
-            fig.set_dpi(96)
-            fig.canvas.draw()
-            site_png_file_name = png_file_name(site)
-            if not isinstance(site_png_file_name, str):
-                raise TypeError(
-                    "png_file_name() must return str, "
-                    f"got {type(site_png_file_name).__name__} for site {site!r}"
-                )
-            fig.savefig(png_dir / site_png_file_name, dpi=300, bbox_inches='tight')
-    
-            plt.close(fig)
+            try:
+                kvals = live_k(now_time, site_code=site, path_prefix=path_prefix)
+                fig, ax = plot_k(kvals, colorbar=False, show_logo=False)
+                met = get_site_metadata(site)
+                fig.suptitle(f"MagIE {met['station_name']} Local K Index", y=.95)
+                ax.set_ylabel('K Index')
+                fig.text(.6, -0.035, f"Plot Updated {now_time.floor('1s')} UT")
+                fig.set_dpi(96)
+                fig.canvas.draw()
+                site_png_file_name = png_file_name(site)
+                if not isinstance(site_png_file_name, str):
+                    raise TypeError(
+                        "png_file_name() must return str, "
+                        f"got {type(site_png_file_name).__name__} for site {site!r}"
+                    )
+                fig.savefig(png_dir / site_png_file_name, dpi=300, bbox_inches='tight')
+        
+                plt.close(fig)
+            except Exception as e:
+                print(f"Error processing site {site}: {e}")
+                continue
             kvals = pd.DataFrame({'K_index' : kvals['var1']}, index= kvals['time'])
             kvals = kvals.dropna().iloc[-1]
             # Only alert on recent, above-threshold values that are not

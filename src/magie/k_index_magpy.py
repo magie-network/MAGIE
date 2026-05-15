@@ -296,7 +296,7 @@ def _get_live(date, site_code, path_prefix='https://data.magie.ie/'):
         df = pd.concat([pd.DataFrame(columns=df.columns,
                                      data=[[pd.Timestamp(df.Date_UTC.min().to_numpy().astype('datetime64[D]').astype('datetime64[ns]')),
                                             site_code] + [np.nan] * (len(df.columns) - 2)]), df])
-        df= magie2iaga2002(df, 'dun')
+        df= magie2iaga2002(df, site_code)
     return df
 
 @enforce_types(
@@ -324,15 +324,25 @@ def live_k(now_time, site_code, path_prefix='https://data.magie.ie/', site_metad
 
     Examples
     --------
-    >>> live_k(pd.Timestamp('2024-01-03'), 'dun')  # doctest: +SKIP
+    >>> live_k(pd.Timestamp('2024-01-03'), 'dun')
     """
     start_time = pd.Timestamp(now_time).floor('1D')-pd.Timedelta(4, 'D')
     end_time = pd.Timestamp(now_time).ceil('1D')
     with TemporaryDirectory(prefix="live_mags_download") as tmpdir:
+        data = None
         for date in np.arange(start_time, end_time, np.timedelta64(1, 'D')):
-            data, filename=_get_live(date, site_code, path_prefix=path_prefix)
+            try:
+                data, filename=_get_live(date, site_code, path_prefix=path_prefix)
+            except FileNotFoundError as e:
+                print(f"File not found for date {date}: {e}")
+                continue
             with open(tmpdir +'/'+ filename, 'w') as file:
                 file.write(data)
+        if data is None:
+            raise FileNotFoundError(
+                f"No live data files found for site {site_code!r} between "
+                f"{start_time.date()} and {(end_time - pd.Timedelta(days=1)).date()}"
+            )
         data, filename= build_empty_iaga_window(now_time,
                         iaga_code=site_code, sampling_step_seconds=_sampling_step_seconds_from_header(data))
         with open(f"{tmpdir}/{filename}", 'w') as file:
