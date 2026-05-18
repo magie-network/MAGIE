@@ -53,6 +53,19 @@ def enforce_types(**type_map):
 
     return decorator
 
+_FLO_COMMENTS_ = (
+    " This data file was created by the BGS geomagnetic data processing ",
+    " software running under the Linux operating system. D and I are    ",
+    " reported in angular units of minutes of arc, E,H,X,Y,Z and F      ",
+    " are reported in nanotesla. Missing data are denoted by 99999.00   ",
+    "                                                                   ",
+    " CONDITIONS OF USE: For scientific/academic studies only. Please   ",
+    " acknowledge BGS in any publications, conference presentations     ",
+    " and posters that make use of this data. For all other applications",
+    " please contact the Geomagnetism team of BGS, Edinburgh. ",   
+    " Contact details are available from ",                       
+    " http://www.geomag.bgs.ac.uk/contactus/staff.html",
+    )
 
 SITE_METADATA = {
     "dunsink": {
@@ -61,6 +74,13 @@ SITE_METADATA = {
         "site_code": "dun",
         "geodetic_latitude": 53.38,
         "geodetic_longitude": -6.34,
+        "elevation" : 85,
+        "reported" : "XYZF",
+        "sensor_orientation" : "XYZF",
+        "digital_sampling" : "1-second",
+        "data_interval_type" : "1_second",
+        "data_type" : "variation",
+        "comments" : None,
         "k9_threshold": 570,
     },
     "dunsink EZIE Mag": {
@@ -71,12 +91,36 @@ SITE_METADATA = {
         "geodetic_longitude": -6.34,
         "k9_threshold": 570,
     },
+    "florence court": {
+        "station_name" : "Florence Court",
+        "source_of_data" : "British Geological Survey (BGS)",
+        "iaga_code" : "FLO",
+        "site_code" : "flo",
+        "geodetic_latitude" : 54.25,
+        "geodetic_longitude" : 352.27,
+        "elevation" : 87,
+        "reported" : "XYZF",
+        "sensor_orientation" : "XYZF",
+        "digital_sampling" : "1-second",
+        "data_interval_type" : "1_second",
+        "data_type" : "variation",
+        "comments" : _FLO_COMMENTS_,
+        "k9_threshold": "unknown",
+    },
     "valentia": {
         "station_name": "Valentia",
+        "source_of_data" : "Met Eireann, the Irish National Meteorologica",
         "iaga_code": "VAL",
         "site_code": "val",
         "geodetic_latitude": 51.94,
         "geodetic_longitude": -10.24,
+        "elevation" : 0,
+        "reported" : "XYZF",
+        "sensor_orientation" : "XYZF",
+        "digital_sampling" : None,
+        "data_interval_type" : "1-minute",
+        "data_type" : "variation",
+        "comments" : None,
         "k9_threshold": 480,
     },
     "armagh": {
@@ -85,6 +129,13 @@ SITE_METADATA = {
         "site_code": "arm",
         "geodetic_latitude": 54.34,
         "geodetic_longitude": -6.66,
+        "elevation" : 60,
+        "reported" : "XYZF",
+        "sensor_orientation" : "XYZF",
+        "digital_sampling" : "1-second",
+        "data_interval_type" : "1_second",
+        "data_type" : "variation",
+        "comments" : None,
         "k9_threshold": 630,
     },
 }
@@ -94,6 +145,7 @@ SITE_ALIASES = {
     "dunsink": "dunsink",
     "dun_eziemag": "dunsink EZIE Mag",
     "dunsink_eziemag": "dunsink EZIE Mag",
+    "flo": "florence court",
     "val": "valentia",
     "valentia": "valentia",
     "arm": "armagh",
