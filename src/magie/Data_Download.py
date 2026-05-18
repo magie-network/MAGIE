@@ -707,18 +707,16 @@ def save_SAGE_data(df, baseDir, freq='1s', obs="flo", flag=99999.00,
             )
 
     cols = ["Bx", "By", "Bz"]
-    for day, oneDayData in df.groupby(df.index.date):
+    date_range = pd.date_range(df.index[0], df.index[-1], freq="D")
+    grouped = df.groupby(df.index.date)
+    for day in date_range:
         day = pd.Timestamp(day)
-        dataStr = day.strftime("%Y%m%d")
-        fname = f"{obs}{dataStr}.txt"
-        # Extract date
-        dateStr = Path(fname).stem.replace(f"{obs}", "")
-        dateObj = dt.strptime(dateStr, "%Y%m%d")
+        fname = f"{obs}{day.strftime('%Y%m%d')}.txt"
 
         # Build directory
-        targetDir = baseDir / dateObj.strftime("%Y") \
-            / dateObj.strftime("%m") \
-            / dateObj.strftime("%d") \
+        targetDir = baseDir / day.strftime("%Y") \
+            / day.strftime("%m") \
+            / day.strftime("%d") \
             / "txt"
 
         targetDir.mkdir(parents=True, exist_ok=True)
@@ -729,30 +727,47 @@ def save_SAGE_data(df, baseDir, freq='1s', obs="flo", flag=99999.00,
         # Save file there
         filePath = targetDir / fname
 
-        if filePath.exists():
+        if filePath.exists() and filePath.stat().st_size > 0:
             dfOneDay = pd.read_csv(
-                filePath, sep=r"\s+", index_col=0, parse_dates=True
-                )
+                filePath, sep=r"\s+",
+                names=["Date", "Time", "Index#", "Bx", "By", "Bz"],
+                skiprows=1
+            )
+            dfOneDay["Date & Time"] = (
+                dfOneDay["Date"] + " " + dfOneDay["Time"]
+            )
+            dfOneDay = dfOneDay.drop(columns=["Date", "Time"])
+            dfOneDay = dfOneDay.set_index("Date & Time")
+            dfOneDay.index = pd.to_datetime(dfOneDay.index)
         else:
-            dfOneDay = daily_file_template(day, freq=freq, flag=flag)
+            dfOneDay = daily_file_template(day.date(), freq=freq, flag=flag)
 
-        src = oneDayData[cols].copy()
-        # creates boolean-mask of rows in src[col] that are non-NaN nor flagged
-        # valid rows are True for rows in src, should overwrite dfOneDay
-        for col in cols:
-            valid = ~src[col].isna() & (src[col] != flag)
-            # intersection() only keep timestamps in src that exist in dfOneDay
-            matchedIndex = src.index[valid].intersection(dfOneDay.index)
-            dfOneDay.loc[matchedIndex, col] = src.loc[matchedIndex, col]
+        # merge real data if they exist in df
+        if day.date() in grouped.groups:
+            oneDayData = grouped.get_group(day.date())
+            src = oneDayData[cols].copy()
+            # creates boolean-mask of rows in src[col] that are non-NaN/flagged
+            # valid rows are True for rows in src, should overwrite dfOneDay
+            for col in cols:
+                valid = ~src[col].isna() & (src[col] != flag)
+            # intersection only keep timestamps in src that exist in dfOneDay
+                matchedIndex = src.index[valid].intersection(dfOneDay.index)
+                dfOneDay.loc[matchedIndex, col] = src.loc[matchedIndex, col]
 
-        dfOut = dfOneDay.copy()
         # ensure numeric columns are floats
-        dfOut[cols] = dfOut[cols].astype(float)
-        dfOut.index = pd.to_datetime(dfOut.index)
+        dfOneDay[cols] = dfOneDay[cols].astype(float)
 
         # saves file space-delimited
-        dfOut.to_csv(filePath, sep=" ", index=True, float_format="%.2f")
-        if printHeader is True:
+        with open(filePath, 'w') as f:
+            f.write("Date & Time Index# Bx By Bz\n")
+            for i, (ind, row) in enumerate(dfOneDay.iterrows(), start=1):
+                dt_str = pd.Timestamp(ind).strftime("%Y-%m-%d %H:%M:%S")
+                f.write(
+                    f"{dt_str} {i} "
+                    f"{row['Bx']:.2f} {row['By']:.2f} {row['Bz']:.2f}\n"
+                )
+
+        if printHeader:
             print(f"Saved/updated: {filePath.name}")
 
 
