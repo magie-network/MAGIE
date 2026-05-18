@@ -8,6 +8,8 @@ Guanren Wang (gwang1@tcd.ie)
 import numpy as np
 import pandas as pd
 import pathlib
+import datetime as dt
+import warnings
 from pathlib import Path
 from magie.Data_Download import daily_file_template
 from magie.utils import enforce_types
@@ -124,12 +126,18 @@ def compute_H(df, obs):
     return df
 
 
-@enforce_types(df=pd.DataFrame, obs=str, hours=(int, float), freq=str)
-def means_calc(df, obs, hours, freq):
+@enforce_types(
+        df=pd.DataFrame,
+        obs=str,
+        hrs=(int, float),
+        start_time=(dt.datetime, type(None)),
+        )
+def means_calc(df, obs, hrs, start_time=None):
     """
-    Computes mean of OBSX, OBSY, OBSZ, OBSH within
-    an integer hour time-window for one-minute or one-second data.
-    Time-window represents geomagnetically quiet time pre-storm.
+    Computes mean of OBSX, OBSY, OBSZ and OBSH within
+    a user selected time-window for one-minute or one-second data
+    Function uses a clock time-based approach.
+    <df_quiet> represents geomagnetically quiet time duration pre-storm.
 
     Parameters:
     -----------
@@ -137,26 +145,35 @@ def means_calc(df, obs, hours, freq):
         index timestamped as datetime object
     obs: str
         iaga three-letter observatory code
-    hours: int, float
+    hrs: int, float
         either integer hours or decimal hours
-    freq: str
-        either "1min" or "1s"
+    start_time: dt.datetime, None
+        Beginning of quiet time window.
+        Defaults to first time in DataFrame.
+
     Returns:
     --------
     quiet_mean: dict
-        Dictionary of mean values keyed by component
+        Dictionary of mean values keyed by component.
     """
-    if freq == "1min":
-        samples = int(hours*60)
-    else:
-        samples = int(hours*3600)
+    if start_time is None:
+        start_time = df.index[0]
+
+    end_time = start_time + dt.timedelta(hours=hrs)
+    df_quiet = df.loc[start_time:end_time]
 
     quiet_mean = {}
     ob = obs.upper()
     for key in ['X', 'Y', 'Z', 'H']:
         col = f"{ob}{key}"
         if col in df.columns:
-            quiet_mean[key] = df[col].iloc[:samples].mean(skipna=True)
+            quiet_mean[key] = df_quiet[col].mean(skipna=True)
+            coverage = df_quiet[col].count() / len(df_quiet)
+            if coverage < 0.9:
+                warnings.warn(
+                    f"Data coverage for {col} in the selected"
+                    f"{hrs} hour quiet period is < 90%."
+                    )
 
     return quiet_mean
 
@@ -469,26 +486,27 @@ def iaga2magie_xyzf(obs, dir, infile):
 
 @enforce_types(
         output_dir=str,
-        current_file_name=(str, pathlib.Path),
+        file_name=(str, pathlib.Path),
         obs=str,
         freq=str,
         flag=(int, float),
         print_msg=bool,
         )
-def generate_missing_days(
-        output_dir, current_file_name, obs='flo', freq='1s',
+def generate_missing_day(
+        base_dir, file_name, obs='flo', freq='1s',
         flag=99999.00, print_msg=False
         ):
     """
-    Fills missing daily variometer files between the previous file on disk
-    and the latestFile.
+    Fills missing daily variometer file in a nested file structure
+    the form of base_dir/yyyy/mm/dd/txt/ based on input file name.
 
     Parameters:
     -----------
-    output_dir: str
-        Path folder where daily variometer files live
+    base_dir: str
+        Path folder where daily variometer files are stored
+        actual files live in its sub-folders
 
-    current_file_name: str
+    file_name: str
         Name to current file in the output_dir
         E.g. flo20260116.txt; if the most recent variometer data
         and daily file is generated on 16-01-2026.
@@ -502,11 +520,11 @@ def generate_missing_days(
 
     flag: float optional
         indicates missing data either 99999.0 or 99999.00
-        depending on component.
+        depending on component
 
     Raises:
     -------
-    FileNotFoundError
+    ValueError
 
     Returns:
     --------
@@ -518,40 +536,42 @@ def generate_missing_days(
         generate_missing_days(outputDir, "flo20260126.txt")
         if current day with data is 2026-01-26
     """
-    output_dir = Path(output_dir)
-    current_file = output_dir / current_file_name
-
-    if not current_file.exists():
-        raise FileNotFoundError(f"Latest file not found: {current_file}")
-
-    existing_files = sorted(
-        f for f in output_dir.glob(f"{obs}????????.txt")
-        if f.stem[len(obs):].isdigit()
+    base_dir = Path(base_dir)
+    stem = Path(file_name).stem
+    valid = (
+        file_name.startswith(obs)
+        and file_name.endswith('txt')
+        and len(stem[len(obs):]) == 8
+        and file_name[len(obs):-4].isdigit()
     )
 
-    # find the most recent file before latestFile
-    # no previous files then nothing to fill
-    prev_files = [x for x in existing_files if x < current_file]
-    if not prev_files:
-        return
+    if not valid:
+        raise ValueError(
+            f"{file_name} not in the format of {obs}YYYYMMDD.txt"
+        )
 
-    prev_file = prev_files[-1]
-    prev_day = pd.to_datetime(prev_file.stem[len(obs):], format="%Y%m%d")
-    curr_day = pd.to_datetime(current_file.stem[len(obs):], format="%Y%m%d")
+    date_str = stem[len(obs):]
+    date = dt.datetime.strptime(date_str, "%Y%m%d").date()
+    target_dir = (
+        base_dir / date.strftime("%Y") / date.strftime("%m")
+        / date.strftime("%d") / "txt"
+        )
+    target_dir.mkdir(parents=True, exist_ok=True)
 
-    for missing_days in pd.date_range(
-        prev_day + pd.Timedelta(days=1),
-        curr_day - pd.Timedelta(days=1),
-        freq="D"
-    ):
-        fname = output_dir / f"{obs}{missing_days.strftime('%Y%m%d')}.txt"
+    fname = target_dir / file_name
 
-        if not fname.exists():
-            df = daily_file_template(missing_days, freq=freq, flag=flag)
-            df.index = df.index.strftime("%Y/%m/%d %H:%M:%S")
-            df.to_csv(fname, sep=" ", index=True, float_format="%.2f")
-            if print_msg:
-                print(f"Saved/updated: {fname.name} in {output_dir}")
+    if not fname.exists():
+        df = daily_file_template(date, freq=freq, flag=flag)
+        with open(fname, 'w') as f:
+            f.write("Date & Time Index# Bx By Bz\n")
+            for i, (ind, row) in enumerate(df.iterrows(), start=1):
+                timestamp_str = pd.Timestamp(ind).strftime("%Y/%m/%d %H:%M:%S")
+                f.write(
+                    f"{timestamp_str} {i} "
+                    f"{row['Bx']:.2f} {row['By']:.2f} {row['Bz']:.2f}\n"
+                )
+        if print_msg:
+            print(f"Saved/updated: {fname.name} in {target_dir}")
 
 
 if __name__ == '__main__':
