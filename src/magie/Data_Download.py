@@ -707,9 +707,8 @@ def save_SAGE_data(df, baseDir, freq='1s', obs="flo", flag=99999.00,
             )
 
     cols = ["Bx", "By", "Bz"]
-    date_range = pd.date_range(df.index[0], df.index[-1], freq="D")
     grouped = df.groupby(df.index.date)
-    for day in date_range:
+    for day, oneDayData in grouped:
         day = pd.Timestamp(day)
         fname = f"{obs}{day.strftime('%Y%m%d')}.txt"
 
@@ -724,6 +723,7 @@ def save_SAGE_data(df, baseDir, freq='1s', obs="flo", flag=99999.00,
             raise FileNotFoundError(
                 f"Failed to create directory: {targetDir}"
                 )
+
         # Save file there
         filePath = targetDir / fname
 
@@ -743,16 +743,14 @@ def save_SAGE_data(df, baseDir, freq='1s', obs="flo", flag=99999.00,
             dfOneDay = daily_file_template(day.date(), freq=freq, flag=flag)
 
         # merge real data if they exist in df
-        if day.date() in grouped.groups:
-            oneDayData = grouped.get_group(day.date())
-            src = oneDayData[cols].copy()
-            # creates boolean-mask of rows in src[col] that are non-NaN/flagged
-            # valid rows are True for rows in src, should overwrite dfOneDay
-            for col in cols:
-                valid = ~src[col].isna() & (src[col] != flag)
+        src = oneDayData[cols].copy()
+        # creates boolean-mask of rows in src[col] that are non-NaN/flagged
+        # valid rows are True for rows in src, should overwrite dfOneDay
+        for col in cols:
+            valid = ~src[col].isna() & (src[col] != flag)
             # intersection only keep timestamps in src that exist in dfOneDay
-                matchedIndex = src.index[valid].intersection(dfOneDay.index)
-                dfOneDay.loc[matchedIndex, col] = src.loc[matchedIndex, col]
+            matchedIndex = src.index[valid].intersection(dfOneDay.index)
+            dfOneDay.loc[matchedIndex, col] = src.loc[matchedIndex, col]
 
         # ensure numeric columns are floats
         dfOneDay[cols] = dfOneDay[cols].astype(float)
