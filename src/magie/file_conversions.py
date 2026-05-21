@@ -464,6 +464,7 @@ def magie2iaga2002(
     filename = _iaga_filename(code, file["Date_UTC"].iloc[0], data_type, interval_extension)
     return "\n".join(lines) + "\n", filename
 
+
 @enforce_types(filename=str)
 def magie_legacy2magie(filename):
     """
@@ -542,9 +543,8 @@ def magie_legacy2magie(filename):
     return file[drop_index]
 
 
-
 @enforce_types(filename=str)
-def magie_legacy2iaga2002(filename):
+def magie_legacy2iaga2002(filename, **kwargs):
     """
     Convert a legacy MagIE text export directly to IAGA-2002 content.
 
@@ -552,6 +552,9 @@ def magie_legacy2iaga2002(filename):
     ----------
     filename : str
         Path to a legacy MagIE text file.
+    **kwargs:
+        optional keyword aerguments passed directly to magie2iaga2002
+        See magie2iaga2002 function for full list of parameters.
 
     Returns
     -------
@@ -560,8 +563,9 @@ def magie_legacy2iaga2002(filename):
     """
     file = magie_legacy2magie(filename)
     if not file is None:
-        return magie2iaga2002(file)
+        return magie2iaga2002(file, **kwargs)
     return None, None
+
 
 @enforce_types(file=str, output_dir_builder=Callable)
 def save_iaga2002_file(file, output_dir_builder=lambda date: 'magnetometer_archive/{}/{}/{}/iaga2002/'.format(*date)):
