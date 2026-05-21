@@ -70,6 +70,7 @@ _FLO_COMMENTS_ = (
 SITE_METADATA = {
     "dunsink": {
         "station_name": "Dunsink",
+        "source_of_data" : "Dubin Institute of Advanced Studies",
         "iaga_code": "DUN",
         "site_code": "dun",
         "geodetic_latitude": 53.38,
@@ -125,6 +126,7 @@ SITE_METADATA = {
     },
     "armagh": {
         "station_name": "Armagh",
+        "source_of_data" : "Dubin Institute of Advanced Studies",
         "iaga_code": "ARM",
         "site_code": "arm",
         "geodetic_latitude": 54.34,
