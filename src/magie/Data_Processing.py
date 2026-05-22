@@ -349,8 +349,8 @@ def fix_timestamp_duplicates(df):
     return df_new
 
 
-@enforce_types(dir=pathlib.Path, df=pd.DataFrame)
-def read_IAGA2002(dir, fname):
+@enforce_types(dir=pathlib.Path, df=pd.DataFrame, print_debug=False)
+def read_IAGA2002(dir, fname, print_debug):
     """
     Program to read in text files in IAGA-2002 format defined in
     https://www.ncei.noaa.gov/services/world-data-system/v-dat-working-group/iaga-2002-data-exchange-format
@@ -387,15 +387,17 @@ def read_IAGA2002(dir, fname):
     Parameters:
     -----------
     dir: pathlib.Path
-        Path folder where daily iaga-2002 day files live
+        Path folder where daily IAGA-2002 day files live
 
     obs: str optional
         Three observatory code.
 
+    print_debug: bool
+
     Returns:
     --------
     df: pandas.DataFrame
-        Data are under 5 columns from iaga file.
+        Data are under 5 columns from IAGA-2002 file.
         DATE and TIME columns set to index.
         DATE TIME DOY OBSX OBSY OBSZ OBSF
     """
@@ -411,10 +413,10 @@ def read_IAGA2002(dir, fname):
                 header = line.lstrip().rstrip("|").split()
                 headerLine = i
                 break
-
-    print('Mandatory file header records')
-    for i, line in enumerate(headerData):
-        print(f"{i}: [{line}]")
+    if print_debug:
+        print('Mandatory file header records')
+        for i, line in enumerate(headerData):
+            print(f"{i}: [{line}]")
 
     df = pd.read_csv(
         file, sep=r"\s+",
@@ -438,7 +440,7 @@ def iaga2magie_xyzf(obs, dir, infile):
     Data & Time Index# Bx By Bz Bf
 
     Input IAGA-2002 file format defined in
-    https://www.ncei.noaa.gov/services/world-data-system/v-dat-working-group/iaga-2002-data-exchange-format                    |
+    https://www.ncei.noaa.gov/services/world-data-system/v-dat-working-group/iaga-2002-data-exchange-format
 
     BGS provides us raw data in iaga-2002 format, we read in their data
     then save that data into file format in
