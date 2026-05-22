@@ -12,7 +12,7 @@ from collections.abc import Callable
 from pathlib import Path
 
 from magie.utils import enforce_types, get_asset_path
-
+from magie.Data_Processing import read_IAGA2002
 
 class ArgumentError(Exception):
     """Error raised when plotting helper arguments are invalid."""
@@ -447,7 +447,7 @@ def plot_BxByBz(data, logo_path=None, show_logo= False, auto_xlim=True):
     show_logo=bool,
     auto_xlim=bool,
 )
-def plot_dH(data, logo_path=None, show_logo= False, auto_xlim=True):
+def plot_dH(data, logo_path=None, show_logo=False, auto_xlim=True):
     """
     Plot declination, horizontal intensity, and the first difference of H.
 
@@ -607,27 +607,39 @@ def stack_plot(df, obs_plot_list, padding_fraction, component_list,
     df: pd.DataFrame
         index timestamped as datetime object containing data with column header
         as OBSX, OBSY, OBSZ, etc
+
     obs_plot_list: list
         iaga three-letter observatory code in a comma separated list
+
     padding_fraction: float
+
         Used in equal-spacing offset for stacking based on maximum variation.
         Usually between 0.1 and 0.3 or 10-30% padding
+
     component_list: list
-        strings of components in comma sepatated list
-        E.g. ['X', 'Y, 'Z']
+        strings of components in comma sepatated list E.g. ['X', 'Y, 'Z']
+
     means: dict
         dictionary of numpy.float values for mean in different components
+
     scale_length: float, int
         Scale bar in nT
+
     y_labels: list
-        strings for y-axis label in a comma separated list.
+        strings for y-axis label in a comma separated list
+
     title: str
         plot title, can be '' if no title
+
     file_name: str
         name of file e.g. Mid-Latitude_Nov11-12_Bxyz.png
+
     output_file_path: pathlib.Path
+
     font_size: int
+
     title_font: int
+
     print_msg: bool
         Turn off or on print messages. Default is off.
 
@@ -649,7 +661,6 @@ def stack_plot(df, obs_plot_list, padding_fraction, component_list,
         colours = ["black", "crimson", "blue", "green"]
     else:
         colours = plt.colormaps["viridis"](np.linspace(0, 0.85, N))
-
     # Assign offset values per-observatory dynamically based on data range
     data_ranges = []
     for obs in obs_plot_list:
@@ -659,12 +670,10 @@ def stack_plot(df, obs_plot_list, padding_fraction, component_list,
             spread = df[col].max() - df[col].min()
             obs_spreads.append(spread)
         data_ranges.append(max(obs_spreads))
-
     # compute equal spacing offset for stacking, based on maximum variation
     equal_spacing = max(data_ranges) * padding_fraction
     if print_msg:
         print(f"Using vertical spacing of {equal_spacing:.0f} nT")
-
     y_offsets_per_obs = []
     # compute range per component
     for obs in obs_plot_list:
@@ -676,19 +685,16 @@ def stack_plot(df, obs_plot_list, padding_fraction, component_list,
             ranges_per_component.append(obs_range)
         # use maximum range per component for spacing
         y_offsets_per_obs.append(max(ranges_per_component))
-
     rows = len(component_list)
     fig, axes = plt.subplots(
         nrows=rows, ncols=1, figsize=(14, 10), sharex=True
         )
-
     for i, ax in enumerate(axes):
         # set x-axis limits
         ax.set_xlim(df.index[0], df.index[-1])
         # Prepare lists for y-ticks and labels
         ytick_positions = []
         ytick_labels = []
-
         for obs_index, obs in enumerate(obs_plot_list):
             colour = colours[obs_index]
             obs = obs.upper()
@@ -717,26 +723,21 @@ def stack_plot(df, obs_plot_list, padding_fraction, component_list,
             else:
                 y_val_series = df[comp] + y_offset
                 first_y_val = y_offset
-
             # plot time series
             ax.plot(
                 df.index,
                 y_val_series,
                 label=obs, linewidth=1.2, color=colour
                 )
-
             # y-tick location per observatory
             ytick_positions.append(first_y_val)
             ytick_labels.append(obs)
-
         # Set and label y-ticks after plotting all observatory time series
         ax.yaxis.set_ticks(ytick_positions)
         ax.set_yticklabels(ytick_labels, fontsize=font_size)
-
         # Hide right and top spines
         ax.spines['right'].set_visible(False)
         ax.spines['top'].set_visible(False)
-
         # x-axis formatters (will be applied only on bottom panel,
         # but safe to set for all)
         ax.xaxis.set_major_locator(mdates.HourLocator(byhour=(0, 12, 24)))
@@ -749,7 +750,6 @@ def stack_plot(df, obs_plot_list, padding_fraction, component_list,
                 x=tick, color='black', linestyle='--',
                 alpha=0.5, linewidth=1.5
                 )
-
         # Tick parameters
         ax.tick_params(
             axis='x', which='minor', direction='in',
@@ -774,7 +774,6 @@ def stack_plot(df, obs_plot_list, padding_fraction, component_list,
             )
         # set y-axis label
         ax.set_ylabel(y_labels[i], fontsize=font_size)
-
     # Bottom panel gets the x-axis label
     axes[-1].set_xlabel('Time UTC', fontsize=font_size)
     # set title
@@ -784,7 +783,6 @@ def stack_plot(df, obs_plot_list, padding_fraction, component_list,
     ff = output_file_path / file_name
     if print_msg:
         print(f"Plot {file_name} is saved in {output_file_path}")
-
     fig.savefig(ff, format="png")
     return fig, axes, y_offsets_per_obs
 
@@ -799,14 +797,15 @@ def stack_plot(df, obs_plot_list, padding_fraction, component_list,
     footer=str,
     comps=(list, tuple),
     print_msg=bool,
+    print_debug=bool,
 )
 def plot_variometer_data(start_time, end_time, obs, base_dir,
                          plot_title, outfile_name,
                          footer='', comps=["X", "Y", "Z"],
-                         print_msg=False):
+                         print_msg=False, print_debug=False):
     """
     Program to plot timeseries of raw variometer data for up to four components
-    Hanfles daily file path logic
+    Handles daily file path logic.
     Author: Guanren Wang (gwang1@tcd.ie)
 
     Parameters:
@@ -814,26 +813,37 @@ def plot_variometer_data(start_time, end_time, obs, base_dir,
     start_time: datetime.datetime
         datetime.datetime(2026, 4, 29, 0, 0) or
         pd.Timestamp("2026-04-29 00:00:00")
+
     end_time: datetime.datetime
         datetime.datetime(2026, 5, 1, 23, 59, 59) or
         pd.Timestamp("2026-05-01 23:59:59")
+
     obs: str
         iaga three-letter observatory code
+
     base_dir: pathlib.Path
         Base folder where daily iaga-2002 day files live.
         Presently we assume directory structure is in the form of:
         base_dir/year/mon/dd/txt/
+
     plot_title: str
         Title to appear at the top of the plot
+
     outfile_name: str
         File name for figure
+
     footer: str
         Attrribute information E.g. "For research use only."
+
     comps: list or tuple
         specify components to plot defaults to ['X','Y','Z']
         E.g. ['X'], ['X','Y'], ['X','Y','Z'] or ['X','Y','Z', 'F']
+
     print_msg: bool
-        Turn off or on print messages. Default is off.
+        Turn off or on print messages. Default is off
+
+    print_debug: bool
+        Turn off or on debugging messages. Default is off
 
     Dependencies:
     -------
@@ -849,7 +859,6 @@ def plot_variometer_data(start_time, end_time, obs, base_dir,
     fig : matplotlib.figure.Figure
     ax : list of matplotlib.axes.Axes
     """
-
     df_list = []
     date_range = pd.date_range(start_time, end_time, freq="D")
     for day in date_range:
@@ -857,31 +866,67 @@ def plot_variometer_data(start_time, end_time, obs, base_dir,
         year = day.strftime("%Y")
         mon = day.strftime("%m")
         dd = day.strftime("%d")
+        # txt directory and standard txt file name
         daily_dir = base_dir / year / mon / dd / "txt"
         fname = daily_dir / f"{obs}{date_str}.txt"
+        # IAGA2002 daily file directory
+        iaga2002_daily_dir = base_dir / year / mon / dd / "iaga2002"
+        # daily figure directory
         daily_dir_fig = base_dir / year / mon / dd / "png"
+        # create daily figure directory if it does not exist already
         daily_dir_fig.mkdir(parents=True, exist_ok=True)
         try:
-            df = pd.read_csv(
-                fname, sep=r"\s+",
-                parse_dates=["Date & Time"],
-                index_col="Date & Time",
-                na_values=99999.00
-                )
-            df_list.append(df)
-        except FileNotFoundError:
-            print(f"Missing file: {fname} in {daily_dir}")
-
-    obs = obs.upper()
-    old_col_names = ["Bx", "By", "Bz", "Bf"]
-    new_col_names = [f"{obs}{x}" for x in ["X", "Y", "Z", "F"]]
-
-    combined_df = pd.concat(df_list)
-    combined_df.rename(
-        columns=dict(zip(old_col_names, new_col_names)),
-        inplace=True
+            if fname.exists():
+                df = pd.read_csv(
+                    fname, sep=r"\s+",
+                    names=["Date", "Time", "Index#", "Bx", "By", "Bz"],
+                    skiprows=1,
+                    na_values=99999.00
+                    )
+                df["Date & Time"] = df["Date"] + " " + df["Time"]
+                df = df.drop(columns=["Date", "Time"])
+                df = df.set_index("Date & Time")
+                df.index = pd.to_datetime(df.index)
+                df_list.append(df)
+            else:
+                priority = [f"{obs.lower()}*qsec.sec",
+                            f"{obs.lower()}*psec.sec",
+                            f"{obs.lower()}*vsec.sec",
+                            f"{obs.lower()}*dmin.min",
+                            f"{obs.lower()}*qmin.min",
+                            f"{obs.lower()}*pmin.min",
+                            f"{obs.lower()}*vmin.min"]
+                iaga_file = None
+                for pattern in priority:
+                    match = list(iaga2002_daily_dir.glob(pattern))
+                    if match:
+                        iaga_file = match[0]
+                        break
+                if iaga_file is None:
+                    print(f"No TXT or IAGA-2002 files found in {date_str}")
+                    continue
+                df = read_IAGA2002(
+                    iaga_file.parent, iaga_file.name, print_debug=print_debug
+                    )
+                df_list.append(df)
+        except Exception as e:
+            print(f"Error reading data for {date_str}: {e}")
+    # print this if all files are missing
+    if not df_list:
+        raise FileNotFoundError(
+            "No valid daily variometer files found between "
+            f"{start_time} and {end_time}"
         )
-    combined_df.drop(columns=["Index#"], inplace=True)
+    combined_df = pd.concat(df_list)
+    rename_map = {}
+    obs = obs.upper()
+    for old, new in zip(
+        ["Bx", "By", "Bz", "Bf"], [f"{obs}{x}" for x in ["X", "Y", "Z", "F"]]
+    ):
+        if old in combined_df.columns:
+            rename_map[old] = new
+    combined_df.rename(columns=rename_map, inplace=True)
+    combined_df.drop(columns=["Index#", "DOY"], inplace=True, errors="ignore")
     # File saved in the latest daily file directory path
     ff = daily_dir_fig / outfile_name
     fig, ax = plot_xyzf(
@@ -891,7 +936,6 @@ def plot_variometer_data(start_time, end_time, obs, base_dir,
     if print_msg is True:
         print(f"Saving figure {outfile_name} into {daily_dir_fig}")
         print(f"Directory path to figure is : {ff}")
-
     fig.savefig(ff, format="png")
     return fig, ax
 
@@ -907,8 +951,8 @@ def plot_variometer_data(start_time, end_time, obs, base_dir,
     font_size=int,
     title_font=int
 )
-def plot_xyzf(df, obs, start_time, end_time,
-              plot_title, comps, footer='', font_size=15, title_font=18):
+def plot_xyzf(df, obs, start_time, end_time, plot_title, comps,
+              footer='', font_size=15, title_font=18):
     """
     Quick plot to zoom into specific time interval for one component.
     Author: Guanren Wang (gwang1@tcd.ie)
@@ -916,22 +960,29 @@ def plot_xyzf(df, obs, start_time, end_time,
     Parameters:
     -----------
     df: pd.DataFrame
-        data frame sorted and ensure it is in datetime.
+        data frame sorted and ensure it is in datetime
+
     obs: str
         iaga three-letter observatory code
+
     start_time: datetime.datetime
         datetime.datetime(2026, 4, 29, 0, 0) or
         pd.Timestamp("2026-04-29 00:00:00")
+
     end_time: datetime.datetime
         datetime.datetime(2026, 5, 1, 23, 59, 59) or
         pd.Timestamp("2026-05-01 23:59:59")
+
     plot_title: str
         E.g. f"{ob} raw one-second fluxgate data"
+
     comps: list or tuple
         Components to plot
         E.g. ['X'], ['X','Y'], ['X','Y','Z'] or ['X','Y','Z', 'F']
+
     footer: str
         Attrribute information E.g. "For research use only."
+
     font_size: int
 
     Raises:
@@ -955,32 +1006,26 @@ def plot_xyzf(df, obs, start_time, end_time,
             f"invalid component(s): {invalid}"
             f"Valid options are {sorted(valid_comps)}."
         )
-
     # build column names, check if requested components in comps exits in df
     cols = [f"{obs.upper()}{c}"for c in comps]
     existing_cols = [c for c in cols if c in df.columns]
     missing_cols = [c for c in cols if c not in df.columns]
-
     if not existing_cols:
         raise KeyError(
             f"None of the columns in comps exists: '{cols}'. "
             f"Available columns: {list(df.columns)}"
         )
-
     if missing_cols:
         warnings.warn(
             "The following requested columns are missing and will be skipped:"
             f"{missing_cols}"
         )
-
     n = len(comps)
     fig, ax = plt.subplots(
         nrows=n, ncols=1, sharex=True, figsize=(14, 3.5*n)
         )
-
     if n == 1:
         ax = [ax]
-
     # Plot using the window
     for axis, col, comp in zip(ax, cols, comps):
         axis.plot(
@@ -994,9 +1039,7 @@ def plot_xyzf(df, obs, start_time, end_time,
         axis.tick_params(
             axis='y', which='major', direction='in', labelsize=15, length=10
             )
-
     ax[-1].set_xlim(df_window.index[0], df_window.index[-1])
-
     # X-axis ticks
     ax[-1].xaxis.set_major_locator(mdates.HourLocator(byhour=(0, 12)))
     ax[-1].xaxis.set_minor_locator(mdates.HourLocator(interval=6))
@@ -1012,7 +1055,6 @@ def plot_xyzf(df, obs, start_time, end_time,
             True, which="minor", axis="both", linestyle="-",
             alpha=0.5, linewidth=1.5
             )
-
     # X-tick parameters
     ax[-1].tick_params(
         axis='x', which='minor', direction='in', labelsize=15, length=10
@@ -1029,5 +1071,6 @@ def plot_xyzf(df, obs, start_time, end_time,
             ha='left', va='bottom',
             fontsize=font_size, style='italic', color='black'
         )
-    plt.tight_layout(rect=[0, 0.03, 1, 1])  # leave space at bottom of footer
+    # leave space at bottom of footer
+    plt.tight_layout(rect=[0, 0.03, 1, 1])
     return fig, ax
