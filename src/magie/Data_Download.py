@@ -755,18 +755,149 @@ def save_SAGE_data(df, baseDir, freq='1s', obs="flo", flag=99999.00,
         # ensure numeric columns are floats
         dfOneDay[cols] = dfOneDay[cols].astype(float)
 
-        # saves file space-delimited
+        # saves file tab-delimited in legacy MagIE format
         with open(filePath, 'w') as f:
-            f.write("Date & Time Index# Bx By Bz\n")
+            f.write("Date & Time\tIndex#\tBx\tBy\tBz\n")
             for i, (ind, row) in enumerate(dfOneDay.iterrows(), start=1):
                 dt_str = pd.Timestamp(ind).strftime("%Y-%m-%d %H:%M:%S")
                 f.write(
-                    f"{dt_str} {i} "
-                    f"{row['Bx']:.2f} {row['By']:.2f} {row['Bz']:.2f}\n"
+                    f"{dt_str}\t{i}\t"
+                    f"{row['Bx']:.2f}\t{row['By']:.2f}\t{row['Bz']:.2f}\n"
                 )
 
         if printHeader:
             print(f"Saved/updated: {filePath.name}")
+
+
+@enforce_types(
+    all_file_path=list,
+    base_dir=Path,
+    obs=str,
+    site_name=str,
+    print_msg=bool,
+    print_debug=bool,
+)
+def save_SAGE2iaga2002(
+        all_file_path, base_dir, obs,
+        site_name="florence court",
+        print_msg=False, print_debug=False
+        ):
+    """
+        Program converts space-delimited or tab-delimited MagIE legacy
+        file to IAGA-2002 format.
+        Reads files from base_dir/year/mm/dd/txt/ and saved converted
+        IAGA-2002 format to base_dir/year/dd/mm/dd/iaga2002/
+        Handles both space-delimited and tab-delimited files automaticallty
+
+        Author: Guanren Wang Email: gwang1@tcd.ie
+
+    Parameters:
+        -----------
+        all_file_path: list
+            A list of Path objects
+            E.g.
+            [Path('../Data/2026/05/19/txt'),
+            Path('../Data/2026/05/20/txt')]
+        base_dir: pathlib.Path
+            Base directory where nested year/mm/dd/iaga2002/
+
+        obs: str
+            Three letter IAGA code.
+        site_name: str
+            Name of the site in SITE_METADATA in utils.py
+        print_msg: bool
+            Prints save confirmation messages. Defaults to False.
+        print_debug: bool
+            Prints debugging messages of DataFrame shape and
+            column names. Defaults to False.
+
+        Dependencies:
+        -------
+        magie_legacy2iaga2002: handles tab-delimited format conversion
+        magie2iaga2002 performs the format conversion
+        SITE_METADATA: provides site metadata for IAGA-2002 header
+
+        Returns:
+        --------
+        None
+            Saves IAGA-2002 format to base_dir/year/mm/dd/iaga2002/
+    """
+
+    from magie.file_conversions import magie2iaga2002, magie_legacy2iaga2002
+    from magie.utils import SITE_METADATA
+    site = SITE_METADATA[site_name]
+    # Unpack (**) metadata from dictionary <site> by creating key-value pairs.
+    # Use parameters in <params> to convert the SAGE file to IAGA-2002 format.
+    # Exclude parameters site_code and k9_threshold in <site>.
+    params = {
+        k: v for k, v in site.items()
+        if k not in ["site_code", "k9_threshold"]
+        }
+
+    file_paths = []
+    for path in all_file_path:
+        dd = path.parent.name
+        mm = path.parent.parent.name
+        year = path.parent.parent.parent.name
+        file_name = f"{obs}{year}{mm}{dd}.txt"
+        file_destination = base_dir / year / mm / dd / "txt" / file_name
+        file_paths.append(file_destination)
+
+    for path_to_file in file_paths:
+        if not path_to_file.exists() or path_to_file.stat().st_size == 0:
+            if print_msg:
+                print(f"Skipping missing or empty file: {path_to_file.name}")
+            continue
+
+        path_to_file_str = str(path_to_file)
+        with open(path_to_file, 'r') as f:
+            first_line = f.readline()
+
+        if "\t" in first_line:
+            if print_debug:
+                print(f"Tab-delimited detected: {path_to_file.name}")
+            iaga_content, iaga_fname = magie_legacy2iaga2002(
+                path_to_file_str, **params
+                )
+        else:
+            if print_debug:
+                print(f"Space-delimited detected: {path_to_file.name}")
+            df = pd.read_csv(
+                path_to_file_str,
+                sep=r"\s+",
+                names=["Date", "Time", "Index#", "Bx", "By", "Bz"],
+                skiprows=1
+            )
+            df["Date_UTC"] = df["Date"].astype(str) + \
+                " " + df["Time"].astype(str)
+            df = df.drop(columns=["Date", "Time", "Index#"])
+            df["Date_UTC"] = pd.to_datetime(
+                df["Date_UTC"], format="%Y-%m-%d %H:%M:%S"
+                )
+            # debug checks
+            if print_debug:
+                print(f"File: {path_to_file.name}")
+                print(f"Shape: {df.shape}")
+                print(f"Columns: {df.columns.tolist()}")
+                print(df.head())
+
+            iaga_content, iaga_fname = magie2iaga2002(df, **params)
+
+        if print_msg:
+            print(f"iaga_fname: {iaga_fname}")
+            print(f"iaga_content length: {len(iaga_content)}")
+
+        # save daily IAGA-2002 file
+        if iaga_content and iaga_fname:
+            out_path = path_to_file.parent.parent / "iaga2002" / iaga_fname
+            out_path.parent.mkdir(parents=True, exist_ok=True)
+            with open(out_path, "w") as f:
+                f.write(iaga_content)
+            if print_msg:
+                print(f"Saved: {iaga_fname} in {out_path.parent}")
+        else:
+            if print_msg:
+                print(f"Conversion failed for: {path_to_file.name}")
 
 
 if __name__ == '__main__':
