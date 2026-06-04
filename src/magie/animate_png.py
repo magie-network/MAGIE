@@ -112,6 +112,15 @@ def create_video_from_images(
     height = even(height)
     scale_filter = f"scale={width}:{height}:flags=lanczos"
 
+    # Auto-detect starting number from first matching file
+    first_filename = image_files[0]
+    # Remove prefix and .png extension, extract the numeric part
+    numeric_str = first_filename.replace(prefix, '', 1).replace('.png', '', 1)
+    try:
+        start_number = int(numeric_str)
+    except ValueError:
+        start_number = 1  # fallback to 1 if can't parse
+    
     input_pattern = os.path.join(folder_path, prefix + f"%0{num_digits}d.png")
     output_video = os.path.join(folder_path, filename+".mp4")
 
@@ -122,7 +131,7 @@ def create_video_from_images(
         "-framerate", str(fps),
 
         # Input 0: images
-        "-start_number", "1",     # adjust to 0 if your files begin at 0000
+        "-start_number", str(start_number),
         "-i", input_pattern,
     ]
 
