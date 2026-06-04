@@ -8,11 +8,11 @@ conda create -n magie python=3.12 # important to not use later python versions i
 
 conda activate magie
 
-pip install "git+https://github.com/magie-network/MAGIE.git@1.1.9"
+pip install "git+https://github.com/magie-network/MAGIE.git@1.1.10"
 
 For alert support with `pip`, install the `alerts` extra:
 
-pip install "magie[alerts] @ git+https://github.com/magie-network/MAGIE.git@1.1.9"
+pip install "magie[alerts] @ git+https://github.com/magie-network/MAGIE.git@1.1.10"
 
 This will install mastodon for mastodon alerts
 
