@@ -366,7 +366,7 @@ def plot_BxByBz(data, logo_path=None, show_logo= False, auto_xlim=True):
     data= data.filter()
 
     # Use one shared figure with vertically stacked axes for component comparison.
-    fig= plt.figure(figsize=(400/96, 378/96))
+    fig= plt.figure(figsize=(400/96, 378/96), dpi=96)
     gs= fig.add_gridspec(3, 1, hspace=0.2)
     ax_Bx= fig.add_subplot(gs[0])
     ax_By= fig.add_subplot(gs[1])
@@ -431,6 +431,9 @@ def plot_BxByBz(data, logo_path=None, show_logo= False, auto_xlim=True):
     ax_Bz.xaxis.set_minor_formatter(mdates.DateFormatter('%H'))
     ax_Bz.tick_params(axis='x', which='major', labelrotation=0, pad=15)
     ax_Bz.tick_params(axis='x', which='minor', labelrotation=0, pad=2)
+    for ax in [ax_Bx, ax_By, ax_Bz]:
+        ax.tick_params(axis='both', labelsize=11)
+        ax.yaxis.label.set_size(11)
 
     return fig, ax_Bx, ax_By, ax_Bz
 
@@ -474,7 +477,7 @@ def plot_dH(data, logo_path=None, show_logo= False, auto_xlim=True):
     data= data.filter()
 
     # Use one shared figure with vertically stacked axes for derived quantities.
-    fig= plt.figure(figsize=(400/96, 378/96))
+    fig= plt.figure(figsize=(400/96, 378/96), dpi=96)
     gs= fig.add_gridspec(3, 1, hspace=0.2)
     ax_D= fig.add_subplot(gs[0])
     ax_H= fig.add_subplot(gs[1])
@@ -562,4 +565,7 @@ def plot_dH(data, logo_path=None, show_logo= False, auto_xlim=True):
     ymax = np.nanmax(np.abs(dHdt))
     # Keep positive and negative dH excursions visually comparable.
     ax_dH.set_ylim(-ymax, ymax)
+    for ax in [ax_D, ax_H, ax_dH]:
+        ax.tick_params(axis='both', labelsize=11)
+        ax.yaxis.label.set_size(11)
     return fig, ax_D, ax_H, ax_dH
