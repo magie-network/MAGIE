@@ -355,8 +355,10 @@ def get_GIN_data(dataStartDate, iagaSites, dataDuration, orientation,
     state where 20241122 is the start date.
     File may contain multiple days of data in one file if dataDuration > 1.
 
-    Parameters:
-    -----------
+    Author: Guanren Wang Email: gwang1@tcd.ie
+
+    Parameters
+    ----------
     dataStartDate: datetime.datetime
         A date in the form yyyy-mm-dd. E.g. start = dt.datetime(2025, 11, 23)
     iagaSites: list of str
@@ -391,8 +393,8 @@ def get_GIN_data(dataStartDate, iagaSites, dataDuration, orientation,
         default: True
         set to False to quiet print statements
 
-    Raises:
-    -------
+    Raises
+    ------
         RuntimeError in try-except loop for url validity
         HTTP status code
         200	The request was completed successfully.
@@ -401,9 +403,10 @@ def get_GIN_data(dataStartDate, iagaSites, dataDuration, orientation,
         404	Requested data is not available.
         500	Server encountered an error trying to process the request.
 
-    Returns:
-    --------
-        df_sites (pandas.DataFrame): Data content of GIN file.
+    Returns
+    -------
+        df_sites : pd.DataFrame
+            Data content of GIN file.
 
     """
     urlBase = "https://imag-data.bgs.ac.uk/GIN_V1/GINServices"
@@ -505,16 +508,22 @@ def get_SAGE_variometer(passwordDir, printHeader=False):
     Convert columns to the format available on data.magie.ie as follows:
     Data & Time Index# Bx By Bz
 
-    Parameters:
-    -----------
+    Author: Guanren Wang Email: gwang1@tcd.ie
+
+    Parameters
+    ----------
     passwordDir: str or Path
         load_dotenv fetches the username and password from the .env file
         stored in <passwordDir> with matching keynames
-
     printHeader: boolean optional
 
-    Raises:
+    Returns
     -------
+        df:pandas.DataFrame
+            Live data from BGS Geomagnetic variometer at FLO.
+
+    Raises
+    ------
         RuntimeError in try-except loop for url validity
         HTTP status code
         200	The request was completed successfully.
@@ -523,14 +532,9 @@ def get_SAGE_variometer(passwordDir, printHeader=False):
         404	Requested data is not available.
         500	Server encountered an error trying to process the request.
 
-    Returns:
-    --------
-        df:pandas
-            Live data from BGS Geomagnetic variometer at FLO
-
-    Usage:
-    --------
-        df = get_SAGE_variometer()
+    Example
+    -------
+        df = get_SAGE_variometer(passwordDir)
     """
     url = "https://geomag.bgs.ac.uk/SpaceWeather/fl_24hrdata.out"
     load_dotenv(os.path.join(passwordDir, ".env"))
@@ -600,22 +604,23 @@ def daily_file_template(day, freq="1s", flag=99999.00):
     """
     Create a full-day DataFrame filled with flag values
     Columns are defined as those of data.magie.ie as follows:
-    Data & Time Index# Bx By Bz
+    Data & Time, Index#, Bx, By, Bz
 
-    Parameters:
-    -----------
+    Author: Guanren Wang Email: gwang1@tcd.ie
+
+    Parameters
+    ----------
     day: datetime.date
-
+        Date.
     freq: str optional
         defaults to one-second BGS Geomagnetic Variometer Data
-        Use "1min" for per minute freqeuncy and "1h" for per hour
-
+        Use "1min" for per minute freqeuncy and "1h" for per hour.
     flag: float optional
         indicates missing data either 99999.0 or 99999.00
         depending on component.
 
-    Returns:
-    --------
+    Returns
+    -------
     template: pandas.DataFrame
         Name file header. Pre-populate full day flag values in
         Bx, By and Bz.
@@ -642,17 +647,18 @@ def daily_file_template(day, freq="1s", flag=99999.00):
 
 @enforce_types(
     df=pd.DataFrame,
-    baseDir=Path,
+    base_dir=Path,
     freq=str,
     obs=str,
     flag=(int, float),
-    printHeader=bool,
+    print_msg=bool,
 )
-def save_SAGE_data(df, baseDir, freq='1s', obs="flo", flag=99999.00,
-                   printHeader=False):
+def save_SAGE_data(df, base_dir, freq='1s', obs="flo", flag=99999.00,
+                   print_msg=False):
     """
-    Allocate real data from dataframe and replace the flagged values in
-    the day-files. Extracts final timestamp of input dataframe.
+    Merge real data from df into daily variometer files, overwriting flagged
+    placedholder where real data exists. Missing data gaps are prevserved.
+    Extracts final timestamp of input dataframe.
 
     DataFrame with datetime index spanning 24-hours, crossing midnight
     Saves daily files as floYYYYMMDD.txt.
@@ -661,112 +667,114 @@ def save_SAGE_data(df, baseDir, freq='1s', obs="flo", flag=99999.00,
     When real data exists, they overwrite the flagged values
     Gaps are preserved automatically.
 
-    Parameters:
-    -----------
-    df (pandas.DataFrame): data indexed with timestamps
-        in %Y/%m/%d %H:%M:%S format; E.g: "2026/01/09 12:30:00"
-        Columns in the order of: ['Index#', "Bx", "By", "Bz"]
+    Author: Guanren Wang Email: gwang1@tcd.ie
 
-    baseDir: Path
+    Parameters
+    ----------
+    df: pandas.DataFrame
+        Data indexed with timestamps in %Y/%m/%d %H:%M:%S format,
+        e.g. "2026/01/09 12:30:00". Must contain columns: "Bx", "By", "Bz".
+    base_dir: Path
         base directory for daily variometer files,
-        actual files live in its sub-folders
-
-    freq: str optional
+        actual files live in its sub-folders.
+    freq: str, optional
         defaults to one-second Florence Court (FLO) data part of SAGE.
-        Use "1min" for per minute freqeuncy and "1h" for per hour
-
-    obs: str optional
-        Three letters lowercase default to "flo" BGS variometer
-
-    flag: float optional
+        Use "1min" for per minute frequency and "1h" for per hour.
+    obs: str, optional
+        Three letters lowercase default to "flo" BGS variometer.
+    flag: float, optional
         indicates missing data either 99999.0 or 99999.00
         depending on component.
+    print_msg: boolean, optional
+        Prints save confirmation messages. Defaults to False.
 
-    printHeader: boolean optional
-
-    Raises:
+    Returns
     -------
+    None
+        Results saved in target_dir.
+
+    Raises
+    ------
     FileNotFoundError
+        Output parent directory does not exist, or if
+        target_dir cannot be created.
 
-    Dependencies:
-    -------
+    Dependencies
+    ------------
         Calls daily_file_template function to populate a DataFrame of
         flagged values
         get_SAGE_variometer function stores real BGS data to input df
 
-    Returns:
-    --------
-        None
-    Usage:
-    --------
-        save_BGS_data(df, outputDir, freq='1s', obs="flo", flag=99999.00)
+    Example
+    -------
+        save_SAGE_data(df, base_dir, freq='1s', obs="flo", flag=99999.00)
     """
-    if not baseDir.is_dir():
+    if not base_dir.is_dir():
         raise FileNotFoundError(
-            f"Output parent directory does not exist: {baseDir}"
+            f"Output parent directory does not exist: {base_dir}"
             )
 
     cols = ["Bx", "By", "Bz"]
     grouped = df.groupby(df.index.date)
-    for day, oneDayData in grouped:
+    for day, one_day_data in grouped:
         day = pd.Timestamp(day)
         fname = f"{obs}{day.strftime('%Y%m%d')}.txt"
 
         # Build directory
-        targetDir = baseDir / day.strftime("%Y") \
+        target_dir = base_dir / day.strftime("%Y") \
             / day.strftime("%m") \
             / day.strftime("%d") \
             / "txt"
 
-        targetDir.mkdir(parents=True, exist_ok=True)
-        if not targetDir.is_dir():
+        target_dir.mkdir(parents=True, exist_ok=True)
+        if not target_dir.is_dir():
             raise FileNotFoundError(
-                f"Failed to create directory: {targetDir}"
+                f"Failed to create directory: {target_dir}"
                 )
 
         # Save file there
-        filePath = targetDir / fname
+        file_path = target_dir / fname
 
-        if filePath.exists() and filePath.stat().st_size > 0:
-            dfOneDay = pd.read_csv(
-                filePath, sep=r"\s+",
+        if file_path.exists() and file_path.stat().st_size > 0:
+            df_one_day = pd.read_csv(
+                file_path, sep=r"\s+",
                 names=["Date", "Time", "Index#", "Bx", "By", "Bz"],
                 skiprows=1
             )
-            dfOneDay["Date & Time"] = (
-                dfOneDay["Date"] + " " + dfOneDay["Time"]
+            df_one_day["Date & Time"] = (
+                df_one_day["Date"] + " " + df_one_day["Time"]
             )
-            dfOneDay = dfOneDay.drop(columns=["Date", "Time"])
-            dfOneDay = dfOneDay.set_index("Date & Time")
-            dfOneDay.index = pd.to_datetime(dfOneDay.index)
+            df_one_day = df_one_day.drop(columns=["Date", "Time"])
+            df_one_day = df_one_day.set_index("Date & Time")
+            df_one_day.index = pd.to_datetime(df_one_day.index, dayfirst=True)
         else:
-            dfOneDay = daily_file_template(day.date(), freq=freq, flag=flag)
+            df_one_day = daily_file_template(day.date(), freq=freq, flag=flag)
 
         # merge real data if they exist in df
-        src = oneDayData[cols].copy()
+        src = one_day_data[cols].copy()
         # creates boolean-mask of rows in src[col] that are non-NaN/flagged
-        # valid rows are True for rows in src, should overwrite dfOneDay
+        # valid rows are True for rows in src, should overwrite df_one_day
         for col in cols:
             valid = ~src[col].isna() & (src[col] != flag)
-            # intersection only keep timestamps in src that exist in dfOneDay
-            matchedIndex = src.index[valid].intersection(dfOneDay.index)
-            dfOneDay.loc[matchedIndex, col] = src.loc[matchedIndex, col]
+            # intersection only keep timestamps in src that exist in df_one_day
+            matched_index = src.index[valid].intersection(df_one_day.index)
+            df_one_day.loc[matched_index, col] = src.loc[matched_index, col]
 
         # ensure numeric columns are floats
-        dfOneDay[cols] = dfOneDay[cols].astype(float)
+        df_one_day[cols] = df_one_day[cols].astype(float)
 
         # saves file tab-delimited in legacy MagIE format
-        with open(filePath, 'w') as f:
+        with open(file_path, 'w') as f:
             f.write("Date & Time\tIndex#\tBx\tBy\tBz\n")
-            for i, (ind, row) in enumerate(dfOneDay.iterrows(), start=1):
-                dt_str = pd.Timestamp(ind).strftime("%Y-%m-%d %H:%M:%S")
+            for i, (ind, row) in enumerate(df_one_day.iterrows(), start=1):
+                dt_str = pd.Timestamp(ind).strftime("%d/%m/%Y %H:%M:%S")
                 f.write(
                     f"{dt_str}\t{i}\t"
                     f"{row['Bx']:.2f}\t{row['By']:.2f}\t{row['Bz']:.2f}\n"
                 )
 
-        if printHeader:
-            print(f"Saved/updated: {filePath.name}")
+        if print_msg:
+            print(f"Saved/updated: {file_path.name}")
 
 
 @enforce_types(
@@ -775,56 +783,61 @@ def save_SAGE_data(df, baseDir, freq='1s', obs="flo", flag=99999.00,
     obs=str,
     site_name=str,
     print_msg=bool,
-    print_debug=bool,
 )
 def save_SAGE2iaga2002(
         all_file_path, base_dir, obs,
         site_name="florence court",
-        print_msg=False, print_debug=False
+        print_msg=False
         ):
     """
-        Program converts space-delimited or tab-delimited MagIE legacy
-        file to IAGA-2002 format.
-        Reads files from base_dir/year/mm/dd/txt/ and saved converted
-        IAGA-2002 format to base_dir/year/dd/mm/dd/iaga2002/
-        Handles both space-delimited and tab-delimited files automaticallty
+    Program converts space-delimited or tab-delimited MagIE legacy
+    file to IAGA-2002 format.
+    Reads files from base_dir/year/mm/dd/txt/ and saves converted IAGA-2002
+    format to base_dir/year/dd/mm/dd/iaga2002/.
+    Handles both space-delimited and tab-delimited files automatically.
 
-        Author: Guanren Wang Email: gwang1@tcd.ie
+    Author: Guanren Wang Email: gwang1@tcd.ie
 
-    Parameters:
-        -----------
+    Parameters
+    ----------
         all_file_path: list
             A list of Path objects
             E.g.
             [Path('../Data/2026/05/19/txt'),
             Path('../Data/2026/05/20/txt')]
         base_dir: pathlib.Path
-            Base directory where nested year/mm/dd/iaga2002/
-
+            Base directory where nested year/mm/dd/iaga2002/.
         obs: str
-            Three letter IAGA code.
+            Three-letter IAGA code.
         site_name: str
             Name of the site in SITE_METADATA in utils.py
         print_msg: bool
-            Prints save confirmation messages. Defaults to False.
-        print_debug: bool
-            Prints debugging messages of DataFrame shape and
-            column names. Defaults to False.
+            Prints save confirmation messages and file type detected.
+            Defaults to False.
 
-        Dependencies:
-        -------
-        magie_legacy2iaga2002: handles tab-delimited format conversion
-        magie2iaga2002 performs the format conversion
-        SITE_METADATA: provides site metadata for IAGA-2002 header
+    Returns
+    -------
+    None
+        Saves IAGA-2002 format to base_dir/year/mm/dd/iaga2002/.
 
-        Returns:
-        --------
-        None
-            Saves IAGA-2002 format to base_dir/year/mm/dd/iaga2002/
+    Raises
+    ------
+        The function can raise KeyError if site_name is not in SITE_METADATA.
+
+    Dependencies
+    ------------
+        magie_legacy2iaga2002: handles tab-delimited format conversion.
+        magie2iaga2002: performs the format conversion.
+        SITE_METADATA: provides site metadata for IAGA-2002 header.
     """
 
     from magie.file_conversions import magie2iaga2002, magie_legacy2iaga2002
     from magie.utils import SITE_METADATA
+    if site_name not in SITE_METADATA:
+        raise KeyError(
+            f"'{site_name}' not found in SITE_METADATA (case-sensitive). "
+            f"Available sites: {list(SITE_METADATA.keys())}"
+        )
     site = SITE_METADATA[site_name]
     # Unpack (**) metadata from dictionary <site> by creating key-value pairs.
     # Use parameters in <params> to convert the SAGE file to IAGA-2002 format.
@@ -834,16 +847,13 @@ def save_SAGE2iaga2002(
         if k not in ["site_code", "k9_threshold"]
         }
 
-    file_paths = []
     for path in all_file_path:
         dd = path.parent.name
         mm = path.parent.parent.name
         year = path.parent.parent.parent.name
         file_name = f"{obs}{year}{mm}{dd}.txt"
-        file_destination = base_dir / year / mm / dd / "txt" / file_name
-        file_paths.append(file_destination)
+        path_to_file = base_dir / year / mm / dd / "txt" / file_name
 
-    for path_to_file in file_paths:
         if not path_to_file.exists() or path_to_file.stat().st_size == 0:
             if print_msg:
                 print(f"Skipping missing or empty file: {path_to_file.name}")
@@ -854,13 +864,13 @@ def save_SAGE2iaga2002(
             first_line = f.readline()
 
         if "\t" in first_line:
-            if print_debug:
+            if print_msg:
                 print(f"Tab-delimited detected: {path_to_file.name}")
             iaga_content, iaga_fname = magie_legacy2iaga2002(
                 path_to_file_str, **params
                 )
         else:
-            if print_debug:
+            if print_msg:
                 print(f"Space-delimited detected: {path_to_file.name}")
             df = pd.read_csv(
                 path_to_file_str,
@@ -872,15 +882,8 @@ def save_SAGE2iaga2002(
                 " " + df["Time"].astype(str)
             df = df.drop(columns=["Date", "Time", "Index#"])
             df["Date_UTC"] = pd.to_datetime(
-                df["Date_UTC"], format="%Y-%m-%d %H:%M:%S"
+                df["Date_UTC"], format="%d/%m/%Y %H:%M:%S"
                 )
-            # debug checks
-            if print_debug:
-                print(f"File: {path_to_file.name}")
-                print(f"Shape: {df.shape}")
-                print(f"Columns: {df.columns.tolist()}")
-                print(df.head())
-
             iaga_content, iaga_fname = magie2iaga2002(df, **params)
 
         if print_msg:
