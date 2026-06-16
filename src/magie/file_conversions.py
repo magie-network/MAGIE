@@ -60,7 +60,7 @@ def _infer_iaga_step_seconds(times):
     if len(times) < 2:
         return None
 
-    deltas = times.sort_values().diff().dropna().dt.total_seconds()
+    deltas = pd.Series(times).sort_values().diff().dropna().dt.total_seconds()
     deltas = deltas[deltas > 0]
     if deltas.empty:
         return None
