@@ -578,7 +578,7 @@ def plot_BxByBz(
         )
 
         if auto_xlim:
-            ax.set_xlim(np.array(data['time']).astype('datetime64[D]').min()+np.timedelta64(0, 'D'), np.array(data['time']).astype('datetime64[D]').max()+np.timedelta64(1, 'D'))
+            ax.set_xlim(np.array(data['time']).astype('datetime64[D]').min()+np.timedelta64(1, 'D'), np.array(data['time']).astype('datetime64[D]').max()+np.timedelta64(1, 'D'))
         ax.plot(data['time'], data[col], color=color)
         ax.set_ylabel(f'B{col} (nT)')
         ax.yaxis.set_major_locator(MaxNLocator(nbins=6))
@@ -708,7 +708,7 @@ def plot_dH(
 
 
         if auto_xlim:
-            ax.set_xlim(np.array(data['time']).astype('datetime64[D]').min()+np.timedelta64(0, 'D'), np.array(data['time']).astype('datetime64[D]').max()+np.timedelta64(1, 'D'))
+            ax.set_xlim(np.array(data['time']).astype('datetime64[D]').min()+np.timedelta64(1, 'D'), np.array(data['time']).astype('datetime64[D]').max()+np.timedelta64(1, 'D'))
         ax.plot(data['time'], col, color=color)
         ax.yaxis.set_major_locator(MaxNLocator(nbins=4))
         # Emphasize day boundaries over the six-hour minor grid.
