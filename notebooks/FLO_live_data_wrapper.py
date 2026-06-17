@@ -1,73 +1,86 @@
 """
-Wrapper script that returns the latest 24 hours live 
-1s Data provided by BGS by accessing from a 
-password-protected webpage
+Wrapper script that returns the latest 24 hours live
+1-second data provided by BGS from a password-protected webpage:
 
-https://geomag.bgs.ac.uk/SpaceWeather/fl_24hrdata.out
+    https://geomag.bgs.ac.uk/SpaceWeather/fl_24hrdata.out
 
-and plots the lastest Florence Court (FLO) raw variometer data
-Script can be made to run on the cron every 30 minutes
-Latest 24-hr FLO data and plot gets updated every 30 minutes
+and plots the latest Florence Court (FLO) raw variometer data
+Script can be made to run on the cron every 30 minutes.
+Latest 24-hr FLO data and plot gets updated every 30 minutes.
 
-Update <base_dir> where each one-second day-file are stored in
-<base_dir/year/mon/dd/txt/>
+Setup
+-----
+Update <pwd_dir> to the Path where .env file is stored locally.
+The .env file contains the user name and password provided by BGS
+to access the webpage.
 
-Plots the last three-days of data. Empty plot if no data.
+Update <base_dir> where each one-second daily files are stored in
+<base_dir/year/mm/dd/txt/>
+
+Plotting
+--------
+Plots the last three-days of data. Empty plot if no data available.
 To change number of days since latest, edit
 <duration = dt.timedelta(days=2)>
 
-Guanren Wang January 2026
-Email: gwang1@tcd.ie
+Guanren Wang 2026 Email: gwang1@tcd.ie
 """
-import datetime as dt
+import matplotlib.pyplot as plt
 from pathlib import Path
-from magie.Data_Download import get_SAGE_variometer
-from magie.Data_Download import save_SAGE_data
-from magie.Plots import plot_variometer_data
+from magie.Data_Download import get_SAGE_variometer, save_SAGE_data
+from magie.Data_Download import save_SAGE2iaga2002
+from magie.Data_Processing import get_SAGE_filepaths
+from magie.Plotting_Tools import plot_variometer_data
+from magie.utils import get_site_metadata
+
+# change pw_dir to path folder where .env file is stored locally
+pw_dir = Path(r'../notebooks/')
 
 # change base_dir to path folder where daily variometer files are stored
-base_dir = Path(r'../../Data/')
+base_dir = Path(r'../Data/')
 
-# Data down function requires .env file in <src/magie> that stores the
-# username and password provided by BGS
-df = get_SAGE_variometer(printHeader=False)
+df = get_SAGE_variometer(pw_dir, printHeader=False)
 
-# save the online data to file <base_dir>
-# the script sorts file into <base_dir/year/mon/dd/txt/>
+# save the online data to into <base_dir/year/mon/dd/txt/>
 save_SAGE_data(df, base_dir, freq='1s', obs="flo", flag=99999.00)
 
-# define start and end time for plotting
-end_time = dt.datetime.now().replace(
-    hour=23, minute=59, second=59, microsecond=0
+# if "Missing file : ..."" statement is printed
+# uncomment to import and call __generate_missing_day_ as below.
+# from magie.Data_Processing import generate_missing_day()
+# generate_missing_day(base_dir, "flo20260516.txt", obs='flo')
+
+# PLOT txt file data
+# define start_time, end_time and duration if not using None.
+# end_time = dt.datetime.now().replace(
+#     hour=23, minute=59, second=59, microsecond=0
+#     )
+# define number of days of time series data plotted
+# duration = dt.timedelta(days=2)
+# start_time = (end_time - duration).replace(hour=0, minute=0, second=0)
+obs = "flo"
+
+all_file_path, start_time, end_time = get_SAGE_filepaths(base_dir)
+# convert then save the daily file in <all_file_path> to IAGA-2002 format
+save_SAGE2iaga2002(
+    all_file_path, base_dir, obs, site_name="florence court", print_msg=False
     )
 
-# define number of days of time series data plotted
-duration = dt.timedelta(days=2)
-
-start_time = (end_time - duration).replace(hour=0, minute=0, second=0)
 start = start_time.strftime('%Y-%m-%d')
 end = end_time.strftime('%Y-%m-%d')
-obs = "flo"
-all_file_path = []
-day_iterator = start_time
-while day_iterator <= end_time:
-    day_file_path = (
-        base_dir
-        / day_iterator.strftime("%Y")
-        / day_iterator.strftime("%m")
-        / day_iterator.strftime("%d")
-        / "txt"
-    )
 
-    if day_file_path .exists():
-        all_file_path.append(day_file_path)
-
-    day_iterator += dt.timedelta(days=1)
-
+# plotting parameters
 outfile_name = f"{start}_to_{end}.png"
 comps = ["X", "Y", "Z"]
-
-# plot the latest <duration> days data for variometer
-plot_variometer_data(
-    start_time, end_time, obs, base_dir, outfile_name, comps
+lat = get_site_metadata(obs)["geodetic_latitude"]
+lon = get_site_metadata(obs)["geodetic_longitude"]
+title = (
+    f"Florence Court, Fermanagh, one-second fluxgate variometer "
+    f"Lat: {lat}\u00b0 , Lon: {lon}\u00b0"
+)
+footer = "X, Y, Z data provided by BGS \u00A9 UKRI. For research use only."
+# plot the latest <duration> days data for SAGE variometer
+fig, ax = plot_variometer_data(
+    start_time, end_time, obs, base_dir, title, outfile_name,
+    footer, comps, print_msg=False, print_debug=False
     )
+plt.show()

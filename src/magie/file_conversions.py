@@ -1,5 +1,6 @@
 import pandas as pd
 import numpy as np
+from pathlib import Path
 from collections.abc import Callable
 from magie.utils import enforce_types, get_site_metadata, tqdm_joblib
 
@@ -59,7 +60,7 @@ def _infer_iaga_step_seconds(times):
     if len(times) < 2:
         return None
 
-    deltas = times.sort_values().diff().dropna().dt.total_seconds()
+    deltas = pd.Series(times).sort_values().diff().dropna().dt.total_seconds()
     deltas = deltas[deltas > 0]
     if deltas.empty:
         return None
@@ -463,6 +464,7 @@ def magie2iaga2002(
     filename = _iaga_filename(code, file["Date_UTC"].iloc[0], data_type, interval_extension)
     return "\n".join(lines) + "\n", filename
 
+
 @enforce_types(filename=str)
 def magie_legacy2magie(filename):
     """
@@ -541,9 +543,8 @@ def magie_legacy2magie(filename):
     return file[drop_index]
 
 
-
 @enforce_types(filename=str)
-def magie_legacy2iaga2002(filename):
+def magie_legacy2iaga2002(filename, **kwargs):
     """
     Convert a legacy MagIE text export directly to IAGA-2002 content.
 
@@ -551,6 +552,9 @@ def magie_legacy2iaga2002(filename):
     ----------
     filename : str
         Path to a legacy MagIE text file.
+    **kwargs:
+        optional keyword aerguments passed directly to magie2iaga2002
+        See magie2iaga2002 function for full list of parameters.
 
     Returns
     -------
@@ -559,8 +563,9 @@ def magie_legacy2iaga2002(filename):
     """
     file = magie_legacy2magie(filename)
     if not file is None:
-        return magie2iaga2002(file)
+        return magie2iaga2002(file, **kwargs)
     return None, None
+
 
 @enforce_types(file=str, output_dir_builder=Callable)
 def save_iaga2002_file(file, output_dir_builder=lambda date: 'magnetometer_archive/{}/{}/{}/iaga2002/'.format(*date)):
@@ -657,3 +662,66 @@ def convert_magie_to_iaga_archive(
         with error_log.open("a") as log_file:
             for filename, error_message in errors:
                 log_file.write(f"{filename}\t{error_message}\n")
+
+
+@enforce_types(
+    base_dir=Path,
+    obs=str,
+)
+def space2tab_delim(base_dir, obs):
+    """
+    Converts space-delimited text files to tab-delimited format.
+
+    Searches recursively through
+    base_dir/yyyy/mm/dd/txt/
+    for observatory files and converts them from:
+    Date & Time Index# Bx By Bz
+    2026-05-19 00:00:00 1 18710.72 190.99 46193.97
+    to
+    Date & Time\tIndex#\tBx\tBy\tBz
+    19/05/2026 00:00:00\t1\t18710.72\t190.99\t46193.97
+
+    File already in tab-delimited or empty files are skipped.
+
+    Parameters:
+    -----------
+    base_dir: pathlib.Path
+        Base folder where nested base_dir/year/mon/dd/txt/ lives.
+    obs: str
+        iaga three-letter observatory code e.g. "val"
+
+    Returns:
+    --------
+    Overwrites existing space-delimited files with tab-delimited versions.
+    """
+    for file_path in Path(base_dir).rglob(f"{obs}????????.txt"):
+        # skip empty files to avoid EmptyDataError
+        if file_path.stat().st_size == 0:
+            continue
+
+        # check whether file is already in tab delimited
+        with open(file_path, 'r') as f:
+            first_line = f.readline()
+        if '\t' in first_line:
+            print(f"File is already tab-delimited, skipping {file_path.name}")
+            continue
+
+        # read space-delimited file
+        df = pd.read_csv(
+            file_path,
+            sep=r"\s+",
+            names=["Date", "Time", "Index#", "Bx", "By", "Bz"],
+            skiprows=1
+        )
+        df["Date"] = df["Date"].astype(str)
+        df["Time"] = df["Time"].astype(str)
+        # rewrite space-delimited data as tab-delimited
+        with open(file_path, 'w') as f:
+            f.write("Date & Time\tIndex#\tBx\tBy\tBz\n")
+            for i, (_, row) in enumerate(df.iterrows(), start=1):
+                dt_str = row["Date"] + " " + row["Time"]
+                dt_str = pd.Timestamp(dt_str).strftime("%d/%m/%Y %H:%M:%S")
+                f.write(
+                    f"{dt_str}\t{i}\t"
+                    f"{row['Bx']:.2f}\t{row['By']:.2f}\t{row['Bz']:.2f}\n"
+                )
