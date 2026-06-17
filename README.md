@@ -47,3 +47,5 @@ In the notebook folder a set of notebooks can be found to demonstrate how to use
 - some files have lines only part written as if it broke part way through writing the file (current download code removes these lines but still grabs the remaining good parts of the file)
 - there are varied cadence for some sites some have only 1-min others sometimes have 1 second other times have 1 minute
 - 
+
+# [To do list](todo.md)
