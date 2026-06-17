@@ -1,0 +1,22 @@
+# Environment variables — never commit credentials
+.env
+
+ 
+# Python cache
+__pycache__/
+*.py[cod]
+ 
+# Virtual environment
+venv/
+.venv/
+ 
+# Jupyter notebooks checkpoints
+.ipynb_checkpoints/
+ 
+# OS files
+.DS_Store
+Thumbs.db
+
+# Build artifacts
+build/
+*.egg-info/
