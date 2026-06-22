@@ -55,7 +55,7 @@ from magie.email_utils import (
     render_html_template,
     send_html_email,
 )
-from magie.utils import get_site_metadata, tqdm_joblib
+from magie.utils import enforce_types, get_site_metadata, tqdm_joblib
 
 # Adjust this import to match wherever your converter actually lives.
 from magie.file_conversions import magie_legacy2iaga2002
@@ -171,6 +171,7 @@ class DayAvailability:
     source_file: str | None
 
 
+@enforce_types(path=(str, Path))
 def load_state(path: Path) -> dict:
     """
     Load monitor state from disk.
@@ -187,17 +188,21 @@ def load_state(path: Path) -> dict:
         State dictionary keyed by site code.
     """
 
+    path = Path(path)
+
     if not path.exists():
         return {}
 
     return json.loads(path.read_text(encoding="utf-8"))
 
 
+@enforce_types(path=(str, Path), state=dict)
 def save_state(path: Path, state: dict) -> None:
     """
     Save monitor state to disk as pretty-printed JSON.
     """
 
+    path = Path(path)
     path.parent.mkdir(parents=True, exist_ok=True)
     path.write_text(
         json.dumps(state, indent=2, sort_keys=True),
@@ -205,6 +210,7 @@ def save_state(path: Path, state: dict) -> None:
     )
 
 
+@enforce_types(site=SiteConfig, default_data_root=(str, Path, Mapping))
 def data_root_for_site(
     site: SiteConfig,
     default_data_root: Path | Mapping[str, Path],
@@ -231,6 +237,12 @@ def data_root_for_site(
     return Path(default_data_root)
 
 
+@enforce_types(
+    data_root=(str, Path),
+    site_code=str,
+    day=datetime,
+    today=datetime,
+)
 def candidate_files_for_day(
     data_root: Path,
     site_code: str,
@@ -263,6 +275,8 @@ def candidate_files_for_day(
         Candidate file paths. These may or may not exist.
     """
 
+    data_root = Path(data_root)
+
     yyyy = day.strftime("%Y")
     mm = day.strftime("%m")
     dd = day.strftime("%d")
@@ -287,6 +301,12 @@ def candidate_files_for_day(
     return iaga_files + txt_files
 
 
+@enforce_types(
+    data_root=(str, Path),
+    site_code=str,
+    now=datetime,
+    lookback_days=int,
+)
 def candidate_files(
     data_root: Path,
     site_code: str,
@@ -326,6 +346,7 @@ def candidate_files(
                 yield path
 
 
+@enforce_types(path=(str, Path))
 def read_magnetometer_file(path: Path):
     """
     Read either an IAGA file or a legacy TXT file as a MagPy DataStream.
@@ -352,6 +373,7 @@ def read_magnetometer_file(path: Path):
         If the file type is unsupported.
     """
 
+    path = Path(path)
     suffix = path.suffix.lower()
 
     if suffix in {".sec", ".min"}:
@@ -375,8 +397,8 @@ def read_magnetometer_file(path: Path):
 
     raise ValueError(f"Unsupported magnetometer file type: {path}")
 
-
-def latest_valid_time(stream) -> datetime | None:
+@enforce_types(stream=DataStream)
+def latest_valid_time(stream: DataStream) -> datetime | None:
     """
     Find the latest timestamp where x, y, or z contains real data.
 
@@ -424,6 +446,12 @@ def latest_valid_time(stream) -> datetime | None:
     return None
 
 
+@enforce_types(
+    site_code=str,
+    now=datetime,
+    data_root=(str, Path),
+    lookback_days=int,
+)
 def get_last_measurement(
     site_code: str,
     now: datetime,
@@ -465,6 +493,12 @@ def get_last_measurement(
     return None
 
 
+@enforce_types(
+    subject=str,
+    template_path=(str, Path),
+    cfg=MonitorConfig,
+    values=dict,
+)
 def send_status_email(
     subject: str,
     template_path: Path,
@@ -481,6 +515,7 @@ def send_status_email(
         - send_html_email
     """
 
+    template_path = Path(template_path)
     email_cfg = load_email_config(cfg.email_config_path)
     recipients = load_recipients(cfg.recipients_path)
 
@@ -499,6 +534,7 @@ def send_status_email(
     )
 
 
+@enforce_types(events=list)
 def event_rows_html(events: list[SiteStatusEvent]) -> str:
     """
     Render escaped table rows for a batch of site status events.
@@ -518,6 +554,13 @@ def event_rows_html(events: list[SiteStatusEvent]) -> str:
     return "\n".join(rows)
 
 
+@enforce_types(
+    subject=str,
+    template_path=(str, Path),
+    cfg=MonitorConfig,
+    values=dict,
+    events=list,
+)
 def send_batched_status_email(
     subject: str,
     template_path: Path,
@@ -529,6 +572,7 @@ def send_batched_status_email(
     Render and send one status email containing all events in a monitor run.
     """
 
+    template_path = Path(template_path)
     site_rows = event_rows_html(events)
     values = {
         **values,
@@ -560,6 +604,7 @@ def send_batched_status_email(
     )
 
 
+@enforce_types(site=SiteConfig, cfg=MonitorConfig, state=dict, now=datetime)
 def check_site(
     site: SiteConfig,
     cfg: MonitorConfig,
@@ -664,6 +709,7 @@ def check_site(
         return None
 
 
+@enforce_types(sites=list, cfg=MonitorConfig)
 def run_monitor(sites: list[SiteConfig], cfg: MonitorConfig) -> None:
     """
     Run the monitor once for all configured sites.
@@ -730,9 +776,22 @@ def run_monitor(sites: list[SiteConfig], cfg: MonitorConfig) -> None:
 
     save_state(cfg.state_path, state)
 
+@enforce_types(seconds=(int, float, np.number, type(None)))
 def frequency_from_seconds(seconds: float | None) -> tuple[str | None, int | None]:
     """
     Return a frequency label and expected daily sample count.
+
+    Parameters
+    ----------
+    seconds:
+        Estimated cadence between valid samples.
+
+    Returns
+    -------
+    tuple
+        ``("sec", 86400)`` for one-second cadence, ``("min", 1440)`` for
+        one-minute cadence, or a generic seconds label and expected count for
+        other cadences. ``(None, None)`` is returned when cadence is unknown.
     """
 
     if seconds is None:
@@ -747,11 +806,24 @@ def frequency_from_seconds(seconds: float | None) -> tuple[str | None, int | Non
     return f"{seconds:g}s", round((24 * 60 * 60) / seconds)
 
 
+@enforce_types(path=(str, Path))
 def frequency_from_path(path: Path) -> tuple[str | None, int | None]:
     """
     Infer cadence from a known magnetometer filename when stream timing is sparse.
+
+    Parameters
+    ----------
+    path:
+        Candidate magnetometer file path.
+
+    Returns
+    -------
+    tuple
+        Frequency label and expected daily sample count inferred from ``psec``,
+        ``pmin``, ``.sec``, or ``.min`` naming.
     """
 
+    path = Path(path)
     name = path.name.lower()
     suffix = path.suffix.lower()
 
@@ -764,10 +836,26 @@ def frequency_from_path(path: Path) -> tuple[str | None, int | None]:
     return None, None
 
 
+@enforce_types(path=(str, Path))
 def stream_availability(stream, path: Path) -> DayAvailability:
     """
     Return valid-sample count, latest timestamp, and coverage for one stream.
+
+    Parameters
+    ----------
+    stream:
+        MagPy stream containing ``time``, ``x``, ``y`` and ``z`` arrays.
+    path:
+        Source file path, used for fallback cadence inference and reporting.
+
+    Returns
+    -------
+    DayAvailability
+        Coverage summary for this one file. Timestamps where all x/y/z values
+        are non-finite do not count as valid samples.
     """
+
+    path = Path(path)
 
     try:
         times = np.asarray(stream["time"], dtype=object)
@@ -830,11 +918,32 @@ def stream_availability(stream, path: Path) -> DayAvailability:
     )
 
 
+@enforce_types(site_code=str, day=datetime, data_root=(str, Path))
 def day_data_availability(site_code: str, day: datetime, data_root: Path) -> DayAvailability:
     """
     Return valid data availability for one site on one UTC day.
+
+    The monitor may have multiple candidate files for a site/day, for example
+    live TXT data plus converted IAGA files. This function evaluates every
+    existing candidate file and returns the best available coverage summary.
+
+    Parameters
+    ----------
+    site_code:
+        Normalised site code used in filenames.
+    day:
+        UTC day to inspect.
+    data_root:
+        Archive root containing ``YYYY/MM/DD`` folders.
+
+    Returns
+    -------
+    DayAvailability
+        Best coverage summary found for the day, or an empty summary when no
+        valid data are present.
     """
 
+    data_root = Path(data_root)
     best = DayAvailability(False, None, 0, None, None, None, None)
 
     for path in candidate_files_for_day(data_root, site_code, day, today=day):
@@ -864,6 +973,7 @@ def day_data_availability(site_code: str, day: datetime, data_root: Path) -> Day
     return best
 
 
+@enforce_types(site_code=str, day=datetime, data_root=(str, Path))
 def day_has_valid_data(site_code: str, day: datetime, data_root: Path) -> tuple[bool, datetime | None]:
     """
     Return whether a site has any valid x/y/z data on a given day.
@@ -875,6 +985,7 @@ def day_has_valid_data(site_code: str, day: datetime, data_root: Path) -> tuple[
     return availability.has_data, availability.latest
 
 
+@enforce_types(site_code=str, data_root=(str, Path), day=datetime)
 def availability_job(site_code: str, data_root: Path, day: datetime) -> tuple[str, DayAvailability]:
     """
     Run one site/day availability check for parallel execution.
@@ -883,6 +994,7 @@ def availability_job(site_code: str, data_root: Path, day: datetime) -> tuple[st
     return day.strftime("%Y-%m-%d"), day_data_availability(site_code, day, data_root)
 
 
+@enforce_types(site=SiteConfig, site_data_root=(str, Path), day=datetime)
 def site_availability_job(
     site: SiteConfig,
     site_data_root: Path,
@@ -896,6 +1008,16 @@ def site_availability_job(
     return site, date_key, availability
 
 
+@enforce_types(
+    sites=list,
+    data_root=(str, Path, Mapping),
+    start_date=datetime,
+    end_date=datetime,
+    output_path=(str, Path),
+    parallel_jobs=int,
+    show_progress=bool,
+    update_existing=bool,
+)
 def build_availability_lookup(
     sites,
     data_root,
@@ -919,6 +1041,24 @@ def build_availability_lookup(
     When ``update_existing`` is true, an existing output file is loaded and
     dates in the requested range are recalculated and overwritten while dates
     outside the range are preserved.
+
+    Parameters
+    ----------
+    sites:
+        List of ``SiteConfig`` objects to include in the output.
+    data_root:
+        One shared archive root, or a mapping from site code to archive root.
+    start_date, end_date:
+        Inclusive UTC date range to calculate.
+    output_path:
+        JSON file to write.
+    parallel_jobs:
+        Number of joblib workers. ``1`` runs serially.
+    show_progress:
+        Whether to show the joblib-backed tqdm progress bar.
+    update_existing:
+        If true, merge into an existing file while overwriting the requested
+        date range. If false, rebuild the output from only the requested range.
     """
 
     from joblib import Parallel, delayed
