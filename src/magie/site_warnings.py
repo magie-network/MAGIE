@@ -47,7 +47,7 @@ from string import Template
 from typing import Iterable
 
 import numpy as np
-from magpy.stream import read
+from magpy.stream import DataStream, read
 
 from magie.email_utils import (
     load_email_config,
