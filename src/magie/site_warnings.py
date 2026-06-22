@@ -22,8 +22,8 @@ where:
 
 For completed days, converted IAGA files may exist, for example:
 
-    /YYYY/MM/DD/iaga/dunYYYYMMDDpsec.sec
-    /YYYY/MM/DD/iaga/dunYYYYMMDDpmin.min
+    /YYYY/MM/DD/iaga2002/dunYYYYMMDDpsec.sec
+    /YYYY/MM/DD/iaga2002/dunYYYYMMDDpmin.min
 
 The monitor prefers:
     - today's live TXT file first
@@ -77,6 +77,10 @@ class SiteConfig:
     data_root:
         Optional data root for this site. When omitted, the monitor uses the
         shared ``MonitorConfig.data_root`` value.
+    assumed_data_frequency:
+        Expected data cadence used for availability output when no file exists
+        or cadence cannot be inferred. Known sites derive this from metadata
+        when omitted.
     active:
         Whether this site should currently be monitored.
     permanently_off:
@@ -87,6 +91,7 @@ class SiteConfig:
     code: str
     name: str = ""
     data_root: Path | None = None
+    assumed_data_frequency: str | None = None
     active: bool = True
     permanently_off: bool = False
 
@@ -104,6 +109,12 @@ class SiteConfig:
         self.code = metadata["site_code"]
         if not self.name:
             self.name = metadata["station_name"]
+        if self.assumed_data_frequency is None:
+            interval_type = metadata.get("data_interval_type")
+            if interval_type == "1-second":
+                self.assumed_data_frequency = "sec"
+            elif interval_type == "1-minute":
+                self.assumed_data_frequency = "min"
 
 
 @dataclass
@@ -169,6 +180,28 @@ class DayAvailability:
     coverage_percent: float | None
     data_frequency: str | None
     source_file: str | None
+
+
+@dataclass
+class MagnetometerReadResult:
+    """
+    Loaded magnetometer file and metadata derived while reading it.
+
+    Attributes
+    ----------
+    stream:
+        MagPy data stream loaded from the source file.
+    source_path:
+        Original file path that was read.
+    cadence_path:
+        Path or filename that best describes cadence. For TXT files this is
+        the IAGA filename suggested by ``magie_legacy2iaga2002`` because it
+        includes ``psec`` or ``pmin``.
+    """
+
+    stream: DataStream
+    source_path: Path
+    cadence_path: Path
 
 
 @enforce_types(path=(str, Path))
@@ -290,9 +323,10 @@ def candidate_files_for_day(
         day_dir / "txt" / f"{site_code}{ymd}.txt",
     ]
 
+    iaga_dir = day_dir / "iaga2002"
     iaga_files = [
-        day_dir / "iaga" / f"{site_code}{ymd}psec.sec",
-        day_dir / "iaga" / f"{site_code}{ymd}pmin.min",
+        iaga_dir / f"{site_code}{ymd}psec.sec",
+        iaga_dir / f"{site_code}{ymd}pmin.min",
     ]
 
     if day.date() == today.date():
@@ -347,15 +381,18 @@ def candidate_files(
 
 
 @enforce_types(path=(str, Path))
-def read_magnetometer_file(path: Path):
+def read_magnetometer_file_with_metadata(path: Path) -> MagnetometerReadResult:
     """
-    Read either an IAGA file or a legacy TXT file as a MagPy DataStream.
+    Read a magnetometer file and return the stream plus cadence metadata.
 
     IAGA ``.sec`` and ``.min`` files are read directly with
     ``magpy.stream.read``.
 
     Legacy ``.txt`` files are first converted using ``magie_legacy2iaga2002``.
     The converted IAGA text is written to a temporary file, then read by MagPy.
+    The converter's suggested IAGA filename is retained as ``cadence_path`` so
+    downstream code can infer whether the TXT file represented second or minute
+    data.
 
     Parameters
     ----------
@@ -364,8 +401,8 @@ def read_magnetometer_file(path: Path):
 
     Returns
     -------
-    magpy.stream.DataStream
-        Loaded MagPy data stream.
+    MagnetometerReadResult
+        Loaded stream, original source path, and cadence-informative path.
 
     Raises
     ------
@@ -377,12 +414,17 @@ def read_magnetometer_file(path: Path):
     suffix = path.suffix.lower()
 
     if suffix in {".sec", ".min"}:
-        return read(str(path))
+        return MagnetometerReadResult(
+            stream=read(str(path)),
+            source_path=path,
+            cadence_path=path,
+        )
 
     if suffix == ".txt":
         iaga_text, suggested_filename = magie_legacy2iaga2002(str(path))
 
-        suffix = Path(suggested_filename).suffix or ".sec"
+        cadence_path = Path(suggested_filename)
+        suffix = cadence_path.suffix or ".sec"
 
         with tempfile.NamedTemporaryFile(
             mode="w",
@@ -393,9 +435,26 @@ def read_magnetometer_file(path: Path):
             tmp.write(iaga_text)
             tmp_path = Path(tmp.name)
 
-        return read(str(tmp_path))
+        return MagnetometerReadResult(
+            stream=read(str(tmp_path)),
+            source_path=path,
+            cadence_path=cadence_path,
+        )
 
     raise ValueError(f"Unsupported magnetometer file type: {path}")
+
+
+@enforce_types(path=(str, Path))
+def read_magnetometer_file(path: Path) -> DataStream:
+    """
+    Read either an IAGA file or a legacy TXT file as a MagPy DataStream.
+
+    This compatibility wrapper returns only the stream. Use
+    ``read_magnetometer_file_with_metadata`` when the caller also needs the
+    converted IAGA filename for cadence inference.
+    """
+
+    return read_magnetometer_file_with_metadata(path).stream
 
 @enforce_types(stream=DataStream)
 def latest_valid_time(stream: DataStream) -> datetime | None:
@@ -836,8 +895,44 @@ def frequency_from_path(path: Path) -> tuple[str | None, int | None]:
     return None, None
 
 
-@enforce_types(path=(str, Path))
-def stream_availability(stream, path: Path) -> DayAvailability:
+@enforce_types(frequency=(str, type(None)))
+def expected_samples_from_frequency(frequency: str | None) -> int | None:
+    """
+    Return expected daily sample count for a configured frequency label.
+
+    Parameters
+    ----------
+    frequency:
+        Frequency label such as ``"sec"``, ``"min"``, ``"1-second"`` or
+        ``"1-minute"``.
+
+    Returns
+    -------
+    int or None
+        Expected samples in a complete UTC day, or ``None`` when the label is
+        unknown.
+    """
+
+    if frequency is None:
+        return None
+
+    label = frequency.strip().lower()
+
+    if label in {"sec", "second", "seconds", "1-sec", "1-second"}:
+        return 24 * 60 * 60
+
+    if label in {"min", "minute", "minutes", "1-min", "1-minute"}:
+        return 24 * 60
+
+    return None
+
+
+@enforce_types(path=(str, Path), cadence_path=(str, Path, type(None)))
+def stream_availability(
+    stream,
+    path: Path,
+    cadence_path: Path | None = None,
+) -> DayAvailability:
     """
     Return valid-sample count, latest timestamp, and coverage for one stream.
 
@@ -846,7 +941,10 @@ def stream_availability(stream, path: Path) -> DayAvailability:
     stream:
         MagPy stream containing ``time``, ``x``, ``y`` and ``z`` arrays.
     path:
-        Source file path, used for fallback cadence inference and reporting.
+        Source file path used for reporting.
+    cadence_path:
+        Optional path or filename used for cadence inference. For converted TXT
+        files this should be the converter's suggested IAGA filename.
 
     Returns
     -------
@@ -856,6 +954,7 @@ def stream_availability(stream, path: Path) -> DayAvailability:
     """
 
     path = Path(path)
+    cadence_path = Path(cadence_path) if cadence_path is not None else path
 
     try:
         times = np.asarray(stream["time"], dtype=object)
@@ -898,7 +997,7 @@ def stream_availability(stream, path: Path) -> DayAvailability:
 
     data_frequency, expected_samples = frequency_from_seconds(cadence_seconds)
     if expected_samples is None:
-        data_frequency, expected_samples = frequency_from_path(path)
+        data_frequency, expected_samples = frequency_from_path(cadence_path)
 
     coverage_percent = None
     if expected_samples:
@@ -951,8 +1050,12 @@ def day_data_availability(site_code: str, day: datetime, data_root: Path) -> Day
             continue
 
         try:
-            stream = read_magnetometer_file(path)
-            availability = stream_availability(stream, path)
+            read_result = read_magnetometer_file_with_metadata(path)
+            availability = stream_availability(
+                read_result.stream,
+                read_result.source_path,
+                cadence_path=read_result.cadence_path,
+            )
         except Exception:
             continue
 
@@ -1140,14 +1243,25 @@ def build_availability_lookup(
                 date_key,
                 DayAvailability(False, None, 0, None, None, None, None),
             )
+            data_frequency = availability.data_frequency or site.assumed_data_frequency
+            expected_samples = (
+                availability.expected_samples
+                or expected_samples_from_frequency(data_frequency)
+            )
+            coverage_percent = availability.coverage_percent
+            if coverage_percent is None and availability.has_data and expected_samples:
+                coverage_percent = round(
+                    min(100.0, (availability.valid_samples / expected_samples) * 100),
+                    3,
+                )
+            elif not availability.has_data:
+                coverage_percent = 0.0
 
             available_dates[date_key] = availability.has_data
-            coverage_percent_by_date[date_key] = (
-                availability.coverage_percent if availability.has_data else 0.0
-            )
-            data_frequency_by_date[date_key] = availability.data_frequency
+            coverage_percent_by_date[date_key] = coverage_percent
+            data_frequency_by_date[date_key] = data_frequency
             valid_samples_by_date[date_key] = availability.valid_samples
-            expected_samples_by_date[date_key] = availability.expected_samples
+            expected_samples_by_date[date_key] = expected_samples
             latest_valid_measurement_by_date[date_key] = (
                 availability.latest.isoformat() if availability.latest else None
             )
