@@ -1142,7 +1142,9 @@ def build_availability_lookup(
             )
 
             available_dates[date_key] = availability.has_data
-            coverage_percent_by_date[date_key] = availability.coverage_percent
+            coverage_percent_by_date[date_key] = (
+                availability.coverage_percent if availability.has_data else 0.0
+            )
             data_frequency_by_date[date_key] = availability.data_frequency
             valid_samples_by_date[date_key] = availability.valid_samples
             expected_samples_by_date[date_key] = availability.expected_samples
