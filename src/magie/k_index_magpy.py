@@ -72,6 +72,35 @@ def _get_iaga_path(date, site_code, path_prefix):
         )
     return candidates[0]
 
+
+def _empty_padding_stream(start_time, site_code, sampling_step_seconds=60):
+    start_time = pd.Timestamp(start_time)
+    if sampling_step_seconds is None or sampling_step_seconds <= 0:
+        sampling_step_seconds = 60
+
+    times = pd.date_range(
+        start=start_time,
+        end=start_time + pd.Timedelta(days=2) - pd.to_timedelta(sampling_step_seconds, unit="s"),
+        freq=pd.to_timedelta(sampling_step_seconds, unit="s"),
+    )
+
+    array = [np.asarray([]) for _ in DataStream().KEYLIST]
+    array[0] = times.to_numpy()
+    for key in ("x", "y", "z", "f"):
+        array[DataStream().KEYLIST.index(key)] = np.full(len(times), np.nan)
+
+    return DataStream(
+        header={
+            "DataSamplingRate": sampling_step_seconds,
+            "StationID": site_code.upper(),
+            "col-x": "X",
+            "col-y": "Y",
+            "col-z": "Z",
+            "col-f": "F",
+        },
+        ndarray=np.asarray(array, dtype=object),
+    )
+
 @enforce_types(
     iaga_text=str,
     label=str,
@@ -399,6 +428,7 @@ def live_k(now_time, site_code, path_prefix='https://data.magie.ie/', site_metad
         )
     data = DataStream()
     counter = 0
+    padding_sampling_step_seconds = None
     for date in np.arange(start_time, end_time, np.timedelta64(1, 'D')):
         try:
             if file_format.lower() in {"txt", "legacy"}:
@@ -408,6 +438,7 @@ def live_k(now_time, site_code, path_prefix='https://data.magie.ie/', site_metad
                     path_prefix=path_prefix,
                     file_format="txt",
                 )
+                padding_sampling_step_seconds = _sampling_step_seconds_from_header(iaga_text)
                 output_dir = Path(_path_prefix_join(path_prefix, *_date_tokens(date), "iaga2002"))
                 output_dir.mkdir(parents=True, exist_ok=True)
                 iaga_path = output_dir / filename
@@ -418,7 +449,12 @@ def live_k(now_time, site_code, path_prefix='https://data.magie.ie/', site_metad
             print(f"File not found for date {date}: {e}")
             continue
 
-        data = join_streams(data, read(str(iaga_path)))
+        stream = read(str(iaga_path))
+        if padding_sampling_step_seconds is None:
+            sampling_rate = stream.samplingrate()
+            if sampling_rate and sampling_rate > 0:
+                padding_sampling_step_seconds = sampling_rate
+        data = join_streams(data, stream)
         counter += 1
 
     if not counter:
@@ -426,6 +462,14 @@ def live_k(now_time, site_code, path_prefix='https://data.magie.ie/', site_metad
             f"No live data files found for site {site_code!r} between "
             f"{start_time.date()} and {(end_time - pd.Timedelta(days=1)).date()}"
         )
+    data = join_streams(
+        data,
+        _empty_padding_stream(
+            now_time,
+            site_code,
+            sampling_step_seconds=padding_sampling_step_seconds,
+        ),
+    )
     data= data.filter()
     if site_metadata is None:
         site_metadata= get_site_metadata(site_code)
