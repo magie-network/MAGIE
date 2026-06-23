@@ -25,6 +25,9 @@ For completed days, converted IAGA files may exist, for example:
     /YYYY/MM/DD/iaga2002/dunYYYYMMDDpsec.sec
     /YYYY/MM/DD/iaga2002/dunYYYYMMDDpmin.min
 
+The IAGA filename type code may vary, for example ``psec`` for provisional or
+``vsec`` for variation data.
+
 The monitor prefers:
     - today's live TXT file first
     - previous days' IAGA files first
@@ -328,6 +331,9 @@ def candidate_files_for_day(
         iaga_dir / f"{site_code}{ymd}psec.sec",
         iaga_dir / f"{site_code}{ymd}pmin.min",
     ]
+    iaga_files.extend(sorted(iaga_dir.glob(f"{site_code}{ymd}*sec.sec")))
+    iaga_files.extend(sorted(iaga_dir.glob(f"{site_code}{ymd}*min.min")))
+    iaga_files = list(dict.fromkeys(iaga_files))
 
     if day.date() == today.date():
         return txt_files + iaga_files
