@@ -40,7 +40,6 @@ value at a timestamp. A timestamp with only NaNs is treated as missing data.
 from __future__ import annotations
 
 import json
-import tempfile
 from collections.abc import Mapping
 from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
@@ -395,10 +394,10 @@ def read_magnetometer_file_with_metadata(path: Path) -> MagnetometerReadResult:
     ``magpy.stream.read``.
 
     Legacy ``.txt`` files are first converted using ``magie_legacy2iaga2002``.
-    The converted IAGA text is written to a temporary file, then read by MagPy.
-    The converter's suggested IAGA filename is retained as ``cadence_path`` so
-    downstream code can infer whether the TXT file represented second or minute
-    data.
+    The converted IAGA text is written to the persistent sibling ``iaga2002``
+    directory, then read by MagPy. The converted IAGA path is retained as
+    ``cadence_path`` so downstream code can infer whether the TXT file
+    represented second or minute data.
 
     Parameters
     ----------
@@ -429,20 +428,20 @@ def read_magnetometer_file_with_metadata(path: Path) -> MagnetometerReadResult:
     if suffix == ".txt":
         iaga_text, suggested_filename = magie_legacy2iaga2002(str(path))
 
-        cadence_path = Path(suggested_filename)
-        suffix = cadence_path.suffix or ".sec"
+        if not iaga_text or not suggested_filename:
+            raise ValueError(f"Could not convert legacy TXT file to IAGA: {path}")
 
-        with tempfile.NamedTemporaryFile(
-            mode="w",
-            suffix=suffix,
-            encoding="utf-8",
-            delete=False,
-        ) as tmp:
-            tmp.write(iaga_text)
-            tmp_path = Path(tmp.name)
+        if path.parent.name == "txt":
+            iaga_dir = path.parent.parent / "iaga2002"
+        else:
+            iaga_dir = path.parent / "iaga2002"
+        iaga_dir.mkdir(parents=True, exist_ok=True)
+
+        cadence_path = iaga_dir / suggested_filename
+        cadence_path.write_text(iaga_text, encoding="utf-8")
 
         return MagnetometerReadResult(
-            stream=read(str(tmp_path)),
+            stream=read(str(cadence_path)),
             source_path=path,
             cadence_path=cadence_path,
         )

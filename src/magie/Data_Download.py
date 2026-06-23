@@ -13,6 +13,7 @@ import sys
 from urllib.request import urlretrieve
 from pandas.errors import ParserError
 from magie.utils import validinput, enforce_types
+from magie.file_conversions import _normalise_legacy_date_utc
 from tqdm import tqdm
 from dotenv import load_dotenv
 from pathlib import Path
@@ -228,7 +229,7 @@ def download_magie(start, end, sites=['arm', 'dun', 'val', 'bir'], save_file_nam
                 file['Site'] = [site] * len(file)
 
                 # Ensure timestamps are UTC-aware and second-precision
-                file['Date_UTC'] = pd.to_datetime(file['Date_UTC'], utc=True).dt.floor('s')
+                file['Date_UTC'] = _normalise_legacy_date_utc(file['Date_UTC'])
                 start_ts = pd.Timestamp(start)
                 end_ts = pd.Timestamp(end)
                 if start_ts.tzinfo is None:
@@ -273,7 +274,7 @@ def download_magie(start, end, sites=['arm', 'dun', 'val', 'bir'], save_file_nam
                 file['Site'] = [site] * len(file)
 
                 # Ensure timestamps are UTC-aware and second-precision
-                file['Date_UTC'] = pd.to_datetime(file['Date_UTC'], utc=True).dt.floor('s')
+                file['Date_UTC'] = _normalise_legacy_date_utc(file['Date_UTC'])
                 start_ts = pd.Timestamp(start)
                 end_ts = pd.Timestamp(end)
                 if start_ts.tzinfo is None:

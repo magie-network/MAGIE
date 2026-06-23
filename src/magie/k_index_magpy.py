@@ -6,7 +6,8 @@ from contextlib import redirect_stderr, redirect_stdout
 from glob import glob
 from io import StringIO
 from pathlib import Path
-from tempfile import TemporaryDirectory
+from urllib.error import HTTPError, URLError
+from urllib.request import urlopen
 
 import matplotlib.image as mpimg
 import matplotlib.pyplot as plt
@@ -14,12 +15,11 @@ import numpy as np
 import pandas as pd
 from joblib import Parallel, delayed
 from magpy.core import activity as act
-from magpy.stream import DataStream, read
+from magpy.stream import DataStream, read, join_streams
 import matplotlib.dates as mdates
 from matplotlib.colors import BoundaryNorm, ListedColormap
 from matplotlib.offsetbox import AnnotationBbox, OffsetImage
 
-from magie.Data_Download import download
 from magie.file_conversions import (
     _format_iaga_component_series,
     _iaga_comment_record,
@@ -30,6 +30,47 @@ from magie.file_conversions import (
     magie2iaga2002,
 )
 from magie.utils import enforce_types, get_asset_path, get_site_metadata, tqdm_joblib
+
+
+def _date_tokens(date):
+    return pd.Timestamp(date).strftime("%Y-%m-%d").split("-")
+
+
+def _path_prefix_join(path_prefix, *parts):
+    if path_prefix.startswith("http"):
+        return path_prefix.rstrip("/") + "/" + "/".join(parts)
+    return str(Path(path_prefix).joinpath(*parts))
+
+
+def _read_text_source(path_or_url):
+    if path_or_url.startswith("http"):
+        with urlopen(path_or_url) as response:
+            return response.read().decode("utf-8")
+    return Path(path_or_url).read_text(encoding="utf-8")
+
+
+def _iaga_file_candidates(date, site_code, path_prefix):
+    year, month, day = _date_tokens(date)
+    yyyymmdd = f"{year}{month}{day}"
+    folder = _path_prefix_join(path_prefix, year, month, day, "iaga2002")
+    if path_prefix.startswith("http"):
+        return [
+            f"{folder}/{site_code}{yyyymmdd}psec.sec",
+            f"{folder}/{site_code}{yyyymmdd}pmin.min",
+        ]
+
+    pattern = str(Path(folder) / f"{site_code}{yyyymmdd}*")
+    return sorted(glob(pattern))
+
+
+def _get_iaga_path(date, site_code, path_prefix):
+    candidates = _iaga_file_candidates(date, site_code, path_prefix)
+    if not candidates:
+        raise FileNotFoundError(
+            f"No IAGA files found for {site_code} on "
+            f"{pd.Timestamp(date).date()} under {path_prefix!r}."
+        )
+    return candidates[0]
 
 @enforce_types(
     iaga_text=str,
@@ -238,51 +279,68 @@ def build_empty_iaga_window(
     date=(pd.Timestamp, np.datetime64, str),
     site_code=str,
     path_prefix=str,
+    file_format=str,
 )
-def _get_live(date, site_code, path_prefix='https://data.magie.ie/'):
+def _get_live(date, site_code, path_prefix='https://data.magie.ie/', file_format="iaga2002"):
     """
-    Download a single day's live TXT data for a site from data.magie.ie.
+    Load one day's live data for a site.
 
     Parameters
     ----------
     date : datetime-like
-        Date to download.
+        Date to load.
     site_code : str
         Three-letter site code (e.g. ``'dun'``).
+    path_prefix : str, optional
+        Archive root. For local paths this is expected to contain
+        ``YYYY/MM/DD/{txt,iaga2002}/`` directories.
+    file_format : {"iaga2002", "txt"}, optional
+        ``"iaga2002"`` reads the persistent IAGA-2002 file. ``"txt"`` reads
+        the legacy TXT file and returns converted IAGA-2002 text.
 
     Returns
     -------
-    pandas.DataFrame
-        Raw downloaded measurements with a ``Site`` column.
+    tuple[str, str]
+        IAGA-2002 file contents and filename.
 
     Examples
     --------
     >>> _get_live(pd.Timestamp('2024-01-02'), 'dun')  # doctest: +SKIP
     """
+    file_format = file_format.lower()
+    if file_format in {"iaga", "iaga2002"}:
+        for iaga_path in _iaga_file_candidates(date, site_code, path_prefix):
+            try:
+                return _read_text_source(iaga_path), Path(iaga_path).name
+            except (FileNotFoundError, HTTPError, URLError):
+                continue
+        raise FileNotFoundError(
+            f"No IAGA files found for {site_code} on "
+            f"{pd.Timestamp(date).date()} under {path_prefix!r}."
+        )
+    if file_format not in {"txt", "legacy"}:
+        raise ValueError("file_format must be 'iaga2002' or 'txt'.")
+
     if path_prefix.startswith('https'):
         url_prefix = path_prefix
-        if isinstance(date, pd.Timestamp):
-            date= date.to_numpy()
-        date = date.astype('datetime64[D]').astype(str).split('-')
-        url = url_prefix + '{}/{}/{}/txt/'.format(*date)
+        date = _date_tokens(date)
+        url = _path_prefix_join(url_prefix, *date, "txt") + "/"
         filename = site_code + '{}{}{}.txt'.format(*date)
-        with TemporaryDirectory(prefix="live_mags_download") as tmpdir:
-            download(f'{url}{filename}', tmpdir +'/'+ filename)  # network fetch to local cwd
-            columns = ['Date_UTC', 'Index', 'Bx', 'By', 'Bz', 'E1', 'E2', 'E3', 'E4', 'TFG', 'TE', 'Volts']
-            drop_index = columns.copy()
-            drop_index[1] = 'Site'
-            df = pd.read_csv(tmpdir +'/'+ filename, delimiter='\t', 
-                                names=columns, 
-                                skiprows=1, parse_dates=['Date_UTC'], dayfirst=True, index_col=False).replace(99.99999e3, np.nan)
-            df['Site'] = [site_code] * len(df)
-            df = df[drop_index]
-            df = pd.concat([pd.DataFrame(columns=df.columns,
-                                        data=[[pd.Timestamp(df.Date_UTC.min().to_numpy().astype('datetime64[D]').astype('datetime64[ns]')),
-                                                site_code] + [np.nan] * (len(df.columns) - 2)]), df])
-            df= magie2iaga2002(df, site_code)
+        columns = ['Date_UTC', 'Index', 'Bx', 'By', 'Bz', 'E1', 'E2', 'E3', 'E4', 'TFG', 'TE', 'Volts']
+        drop_index = columns.copy()
+        drop_index[1] = 'Site'
+        df = pd.read_csv(f'{url}{filename}', delimiter='\t',
+                            names=columns,
+                            skiprows=1, parse_dates=['Date_UTC'], dayfirst=True, index_col=False).replace(99.99999e3, np.nan)
+        df['Site'] = [site_code] * len(df)
+        df = df[drop_index]
+        df = pd.concat([pd.DataFrame(columns=df.columns,
+                                    data=[[pd.Timestamp(df.Date_UTC.min().to_numpy().astype('datetime64[D]').astype('datetime64[ns]')),
+                                            site_code] + [np.nan] * (len(df.columns) - 2)]), df])
+        df= magie2iaga2002(df, site_code)
     else:
-        date = date.astype('datetime64[D]').astype(str).split('-')
-        folder = path_prefix + '{}/{}/{}/txt/'.format(*date)
+        date = _date_tokens(date)
+        folder = _path_prefix_join(path_prefix, *date, "txt") + "/"
         filename = site_code + '{}{}{}.txt'.format(*date)
         columns = ['Date_UTC', 'Index', 'Bx', 'By', 'Bz', 'E1', 'E2', 'E3', 'E4', 'TFG', 'TE', 'Volts']
         drop_index = columns.copy()
@@ -303,8 +361,9 @@ def _get_live(date, site_code, path_prefix='https://data.magie.ie/'):
     now_time=(pd.Timestamp, np.datetime64, str),
     site_code=str,
     path_prefix=str,
+    file_format=str,
 )
-def live_k(now_time, site_code, path_prefix='https://data.magie.ie/', site_metadata=None):
+def live_k(now_time, site_code, path_prefix='https://data.magie.ie/', site_metadata=None, file_format="iaga2002"):
     """
     Fetch the past 3 days of live data for ``site_code`` and return smoothed K.
 
@@ -314,6 +373,10 @@ def live_k(now_time, site_code, path_prefix='https://data.magie.ie/', site_metad
         Reference time; data are fetched from ``now_time - 3 days`` onward.
     site_code : str
         Three-letter site code to download.
+    file_format : {"iaga2002", "txt"}, optional
+        ``"iaga2002"`` reads existing persistent IAGA files. ``"txt"`` reads
+        legacy TXT files, converts them, saves persistent IAGA files, then reads
+        those IAGA files.
     **kwargs :
         Passed to ``provisional_k`` and ``smooth_kindex``.
 
@@ -327,27 +390,42 @@ def live_k(now_time, site_code, path_prefix='https://data.magie.ie/', site_metad
     >>> live_k(pd.Timestamp('2024-01-03'), 'dun')
     """
     start_time = pd.Timestamp(now_time).floor('1D')-pd.Timedelta(4, 'D')
-    end_time = pd.Timestamp(now_time).ceil('1D')
-    with TemporaryDirectory(prefix="live_mags_download") as tmpdir:
-        data = None
-        for date in np.arange(start_time, end_time, np.timedelta64(1, 'D')):
-            try:
-                data, filename=_get_live(date, site_code, path_prefix=path_prefix)
-            except FileNotFoundError as e:
-                print(f"File not found for date {date}: {e}")
-                continue
-            with open(tmpdir +'/'+ filename, 'w') as file:
-                file.write(data)
-        if data is None:
-            raise FileNotFoundError(
-                f"No live data files found for site {site_code!r} between "
-                f"{start_time.date()} and {(end_time - pd.Timedelta(days=1)).date()}"
-            )
-        data, filename= build_empty_iaga_window(now_time,
-                        iaga_code=site_code, sampling_step_seconds=_sampling_step_seconds_from_header(data))
-        with open(f"{tmpdir}/{filename}", 'w') as file:
-            file.write(data)
-        data= read(f"{tmpdir}/*{filename.split('.')[-1]}")
+    end_time = pd.Timestamp(now_time).floor('1D') + pd.Timedelta(1, 'D')
+    if path_prefix.startswith("http"):
+        raise ValueError(
+            "live_k now expects a local archive path_prefix when "
+            "file_format='iaga2002'. Run the live IAGA updater first, then "
+            "read from the local iaga2002 archive."
+        )
+    data = DataStream()
+    counter = 0
+    for date in np.arange(start_time, end_time, np.timedelta64(1, 'D')):
+        try:
+            if file_format.lower() in {"txt", "legacy"}:
+                iaga_text, filename = _get_live(
+                    date,
+                    site_code,
+                    path_prefix=path_prefix,
+                    file_format="txt",
+                )
+                output_dir = Path(_path_prefix_join(path_prefix, *_date_tokens(date), "iaga2002"))
+                output_dir.mkdir(parents=True, exist_ok=True)
+                iaga_path = output_dir / filename
+                iaga_path.write_text(iaga_text, encoding="utf-8")
+            else:
+                iaga_path = Path(_get_iaga_path(date, site_code, path_prefix))
+        except FileNotFoundError as e:
+            print(f"File not found for date {date}: {e}")
+            continue
+
+        data = join_streams(data, read(str(iaga_path)))
+        counter += 1
+
+    if not counter:
+        raise FileNotFoundError(
+            f"No live data files found for site {site_code!r} between "
+            f"{start_time.date()} and {(end_time - pd.Timedelta(days=1)).date()}"
+        )
     data= data.filter()
     if site_metadata is None:
         site_metadata= get_site_metadata(site_code)
@@ -623,30 +701,29 @@ def daily_K(
     end_time = pd.Timestamp(time).ceil("1D") + pd.Timedelta(3, "D")
     counter = 0
 
-    with TemporaryDirectory() as temp_dir:
-        for date in np.arange(start_time, end_time, pd.Timedelta(1, "D")):
-            date_str = str(date.tolist())[:10].split("-")
-            archive_path = glob(
-                archive_path_builder(date_str) + site_code + "{}{}{}*".format(*date_str)
-            )
-            if len(archive_path) == 0:
-                continue
+    data = DataStream()
+    for date in np.arange(start_time, end_time, pd.Timedelta(1, "D")):
+        date_str = str(date.tolist())[:10].split("-")
+        archive_path = glob(
+            archive_path_builder(date_str) + site_code + "{}{}{}*".format(*date_str)
+        )
+        if len(archive_path) == 0:
+            continue
 
-            counter += 1
-            archive_path = os.path.abspath(archive_path[0])
-            os.symlink(archive_path, os.path.join(temp_dir, os.path.basename(archive_path)))
+        counter += 1
+        day_stream = read(os.path.abspath(archive_path[0]))
+        data = join_streams(data, day_stream)
 
-        if not counter:
-            raise FileNotFoundError(
-                f"No files found for site '{site_code}' in the date range "
-                f"{start_time} to {end_time}."
-            )
-        elif counter < 3:
-            raise FileNotFoundError(
-                f"Datastream is too short; need three full days for site '{site_code}' "
-                f"on {pd.Timestamp(time).floor('1D').date()}."
-            )
-        data = read(temp_dir + "/*")
+    if not counter:
+        raise FileNotFoundError(
+            f"No files found for site '{site_code}' in the date range "
+            f"{start_time} to {end_time}."
+        )
+    elif counter < 3:
+        raise FileNotFoundError(
+            f"Datastream is too short; need three full days for site '{site_code}' "
+            f"on {pd.Timestamp(time).floor('1D').date()}."
+        )
 
     data = data.filter()
     _require_valid_k_window(data, site_code=site_code, time=time)
