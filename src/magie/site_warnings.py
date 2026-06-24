@@ -10,17 +10,7 @@ Data are organised under a root directory like:
 
     /YYYY/MM/DD/
 
-For live/current data, legacy TXT files may live at:
-
-    /YYYY/MM/DD/txt/dunYYYYDDD.txt
-    /YYYY/MM/DD/txt/dunYYYYMMDD.txt
-
-where:
-    dun  = site code
-    YYYY = year
-    DDD  = day of year
-
-For completed days, converted IAGA files may exist, for example:
+Persistent IAGA files are expected at, for example:
 
     /YYYY/MM/DD/iaga2002/dunYYYYMMDDpsec.sec
     /YYYY/MM/DD/iaga2002/dunYYYYMMDDpmin.min
@@ -28,10 +18,8 @@ For completed days, converted IAGA files may exist, for example:
 The IAGA filename type code may vary, for example ``psec`` for provisional or
 ``vsec`` for variation data.
 
-The monitor prefers:
-    - today's live TXT file first
-    - previous days' IAGA files first
-    - TXT fallback if IAGA files do not exist
+The monitor reads persistent IAGA-2002 files only. Legacy TXT files are
+expected to be converted by the live IAGA updater before monitoring runs.
 
 A site is considered active only if at least one of x, y, z contains a finite
 value at a timestamp. A timestamp with only NaNs is treated as missing data.
@@ -60,7 +48,6 @@ from magie.email_utils import (
 from magie.utils import enforce_types, get_site_metadata, tqdm_joblib
 
 # Adjust this import to match wherever your converter actually lives.
-from magie.file_conversions import magie_legacy2iaga2002
 
 
 @dataclass
@@ -196,9 +183,8 @@ class MagnetometerReadResult:
     source_path:
         Original file path that was read.
     cadence_path:
-        Path or filename that best describes cadence. For TXT files this is
-        the IAGA filename suggested by ``magie_legacy2iaga2002`` because it
-        includes ``psec`` or ``pmin``.
+        Path used to infer cadence from the IAGA filename, for example
+        ``psec`` or ``pmin``.
     """
 
     stream: DataStream
@@ -320,11 +306,6 @@ def candidate_files_for_day(
 
     day_dir = data_root / yyyy / mm / dd
 
-    txt_files = [
-        day_dir / "txt" / f"{site_code}{yyyy}{doy}.txt",
-        day_dir / "txt" / f"{site_code}{ymd}.txt",
-    ]
-
     iaga_dir = day_dir / "iaga2002"
     iaga_files = [
         iaga_dir / f"{site_code}{ymd}psec.sec",
@@ -332,12 +313,7 @@ def candidate_files_for_day(
     ]
     iaga_files.extend(sorted(iaga_dir.glob(f"{site_code}{ymd}*sec.sec")))
     iaga_files.extend(sorted(iaga_dir.glob(f"{site_code}{ymd}*min.min")))
-    iaga_files = list(dict.fromkeys(iaga_files))
-
-    if day.date() == today.date():
-        return txt_files + iaga_files
-
-    return iaga_files + txt_files
+    return list(dict.fromkeys(iaga_files))
 
 
 @enforce_types(
@@ -391,13 +367,8 @@ def read_magnetometer_file_with_metadata(path: Path) -> MagnetometerReadResult:
     Read a magnetometer file and return the stream plus cadence metadata.
 
     IAGA ``.sec`` and ``.min`` files are read directly with
-    ``magpy.stream.read``.
-
-    Legacy ``.txt`` files are first converted using ``magie_legacy2iaga2002``.
-    The converted IAGA text is written to the persistent sibling ``iaga2002``
-    directory, then read by MagPy. The converted IAGA path is retained as
-    ``cadence_path`` so downstream code can infer whether the TXT file
-    represented second or minute data.
+    ``magpy.stream.read``. Legacy TXT files are not supported here; they must
+    be converted to persistent IAGA-2002 files before this monitor runs.
 
     Parameters
     ----------
@@ -423,27 +394,6 @@ def read_magnetometer_file_with_metadata(path: Path) -> MagnetometerReadResult:
             stream=read(str(path)),
             source_path=path,
             cadence_path=path,
-        )
-
-    if suffix == ".txt":
-        iaga_text, suggested_filename = magie_legacy2iaga2002(str(path))
-
-        if not iaga_text or not suggested_filename:
-            raise ValueError(f"Could not convert legacy TXT file to IAGA: {path}")
-
-        if path.parent.name == "txt":
-            iaga_dir = path.parent.parent / "iaga2002"
-        else:
-            iaga_dir = path.parent / "iaga2002"
-        iaga_dir.mkdir(parents=True, exist_ok=True)
-
-        cadence_path = iaga_dir / suggested_filename
-        cadence_path.write_text(iaga_text, encoding="utf-8")
-
-        return MagnetometerReadResult(
-            stream=read(str(cadence_path)),
-            source_path=path,
-            cadence_path=cadence_path,
         )
 
     raise ValueError(f"Unsupported magnetometer file type: {path}")
