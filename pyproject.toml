@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "magie"                       # pip name; usually lower-case
-version = "3.0.0"
+version = "3.0.1"
 description = "K-index and magnetometer tools for MagIE."
 readme = "README.md"
 requires-python = ">=3.10,<3.13"
@@ -49,5 +49,5 @@ where = ["src"]
 
 [tool.setuptools.package-data]
 magie = ["*.json"]
-"magie.assets" = ["*.png", "*.jpg"]
+"magie.assets" = ["*.png", "*.jpg", "email_templates/*.html"]
 "magie.assets.logos" = ["*.png", "*.jpg"]
