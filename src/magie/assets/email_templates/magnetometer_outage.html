@@ -1,0 +1,111 @@
+<!DOCTYPE html>
+<html>
+<head>
+<meta charset="utf-8">
+<title>Magnetometer Down</title>
+<style>
+body {
+    font-family: Arial, Helvetica, sans-serif;
+    max-width: 700px;
+    margin: 0 auto;
+    color: #333333;
+    background-color: #f7f7f7;
+}
+.container {
+    background-color: #ffffff;
+    border: 1px solid #dddddd;
+}
+.header {
+    background-color: #d9534f;
+    color: #ffffff;
+    padding: 18px 22px;
+}
+.header h2 {
+    margin: 0;
+}
+.content {
+    padding: 22px;
+}
+.table {
+    border-collapse: collapse;
+    width: 100%;
+    margin-top: 16px;
+    margin-bottom: 16px;
+}
+.table th,
+.table td {
+    border: 1px solid #dddddd;
+    padding: 10px;
+    vertical-align: top;
+}
+.table th {
+    background-color: #f2f2f2;
+    text-align: left;
+}
+.label {
+    font-weight: bold;
+    width: 230px;
+    background-color: #f2f2f2;
+}
+.warning {
+    background-color: #fff3cd;
+    border: 1px solid #ffeeba;
+    padding: 12px;
+    margin-top: 16px;
+}
+.footer {
+    font-size: 0.85em;
+    color: #777777;
+    margin-top: 24px;
+}
+</style>
+</head>
+
+<body>
+<div class="container">
+
+<div class="header">
+<h2>Magnetometer Data Warning</h2>
+</div>
+
+<div class="content">
+
+<p>
+The monitoring system has detected that $site_count magnetometer $site_label $site_verb no
+longer providing valid measurements.
+</p>
+
+<table class="table">
+<tr>
+<th>Site</th>
+<th>Last Valid Measurement (UT)</th>
+<th>Time Since Last Data</th>
+</tr>
+$site_rows
+</table>
+
+<table class="table">
+<tr>
+<td class="label">Alert Threshold</td>
+<td>$threshold_minutes minutes</td>
+</tr>
+
+<tr>
+<td class="label">Check Time (UT)</td>
+<td>$checked_at</td>
+</tr>
+</table>
+
+<div class="warning">
+This alert is sent only once per outage. A further notification will be sent
+when valid data are detected again.
+</div>
+
+<div class="footer">
+MagIE Magnetometer Monitoring System
+</div>
+
+</div>
+</div>
+</body>
+</html>
