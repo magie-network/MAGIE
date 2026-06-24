@@ -34,7 +34,6 @@ from datetime import datetime, timedelta, timezone
 from html import escape
 from pathlib import Path
 from string import Template
-from typing import Iterable
 
 import numpy as np
 from magpy.stream import DataStream, read
@@ -46,9 +45,6 @@ from magie.email_utils import (
     send_html_email,
 )
 from magie.utils import enforce_types, get_site_metadata, tqdm_joblib
-
-# Adjust this import to match wherever your converter actually lives.
-
 
 @dataclass
 class SiteConfig:
@@ -115,10 +111,13 @@ class MonitorConfig:
     ----------
     data_root:
         Root directory containing ``YYYY/MM/DD`` data folders, or a mapping
-        from site code to root directory.
-    state_path:
-        JSON file used to remember whether each site was already offline.
-        This prevents repeated emails every time the monitor runs.
+        from normalised site code to root directory. This allows mixed archive
+        roots, for example ``{"dun": Path("/archive"), "flo": Path("/flo")}``.
+    monitor_status_path:
+        Monitor-owned JSON file used to remember last measurements and whether
+        each site was already offline. If it does not exist, it is created on
+        the first monitor run. This prevents repeated emails every time the
+        monitor runs.
     email_config_path:
         TOML file consumed by ``load_email_config``.
     recipients_path:
@@ -129,19 +128,35 @@ class MonitorConfig:
         HTML template for restored notifications.
     max_inactivity:
         Maximum allowed time since the last valid measurement.
-    lookback_days:
-        Number of days to search backwards when a site has been inactive across
-        one or more day boundaries.
+    availability_lookup_path:
+        JSON availability lookup written by ``build_availability_lookup``.
+        When present, the monitor uses this for last-seen checks instead of
+        rereading archive files for every site.
+    availability_lookup_max_age:
+        Optional maximum age of the lookup file's ``generated_at`` timestamp
+        before the monitor ignores it and falls back to direct archive reads.
+        ``None`` trusts the lookup regardless of age.
+    reset_monitor_status:
+        When ``True``, ignore any existing monitor status JSON and write a fresh
+        one at the end of the run. Defaults to ``False`` so alert deduplication
+        persists across normal monitor runs.
+    force_restored_email:
+        When ``True``, send a restored email for each site that currently has
+        valid data, even if the previous monitor status did not mark it
+        offline. Intended only for template/email testing.
     """
 
-    data_root: Path | Mapping[str, Path]
-    state_path: Path
+    data_root: Path | str | Mapping[str, Path | str]
+    monitor_status_path: Path
     email_config_path: Path
     recipients_path: Path
     outage_email_template: Path
     restored_email_template: Path
     max_inactivity: timedelta
-    lookback_days: int = 7
+    availability_lookup_path: Path
+    availability_lookup_max_age: timedelta | None = None
+    reset_monitor_status: bool = False
+    force_restored_email: bool = False
 
 
 @dataclass
@@ -153,7 +168,7 @@ class SiteStatusEvent:
     site_code: str
     site_name: str
     last_seen_at: str
-    minutes_since_last: str | float
+    time_since_last: str
 
 
 @dataclass
@@ -193,55 +208,246 @@ class MagnetometerReadResult:
 
 
 @enforce_types(path=(str, Path))
-def load_state(path: Path) -> dict:
+def load_monitor_status(path: Path) -> dict:
     """
-    Load monitor state from disk.
+    Load monitor status from disk, creating an empty structure when missing.
 
-    The state records whether each site was offline during the previous check.
+    The status records each site's last measurement and whether it was offline
+    during the previous check.
     The ``offline`` flag is reserved for detected outages. Sites that are
     intentionally disabled are recorded with ``status`` values such as
     ``"inactive"`` or ``"permanently_off"`` instead.
-    If the file does not exist, an empty state is returned.
-
-    Returns
-    -------
-    dict
-        State dictionary keyed by site code.
     """
 
     path = Path(path)
 
     if not path.exists():
-        return {}
+        return {"generated_at": None, "stations": {}}
 
-    return json.loads(path.read_text(encoding="utf-8"))
+    status = json.loads(path.read_text(encoding="utf-8"))
+    if not isinstance(status, dict):
+        return {"generated_at": None, "stations": {}}
+
+    if isinstance(status.get("stations"), dict):
+        status.setdefault("generated_at", None)
+        return status
+
+    # Backwards compatibility for the previous flat state shape keyed by site.
+    stations = {
+        site_code: site_state
+        for site_code, site_state in status.items()
+        if isinstance(site_state, dict)
+    }
+    for site_state in stations.values():
+        if "last_measurement" not in site_state and "last_seen_at" in site_state:
+            site_state["last_measurement"] = site_state.get("last_seen_at")
+    return {"generated_at": status.get("generated_at"), "stations": stations}
 
 
-@enforce_types(path=(str, Path), state=dict)
-def save_state(path: Path, state: dict) -> None:
+@enforce_types(path=(str, Path), status=dict, generated_at=datetime)
+def save_monitor_status(path: Path, status: dict, generated_at: datetime) -> None:
     """
-    Save monitor state to disk as pretty-printed JSON.
+    Save monitor status to disk as pretty-printed JSON.
     """
 
     path = Path(path)
     path.parent.mkdir(parents=True, exist_ok=True)
+    status["generated_at"] = generated_at.isoformat()
+    status.setdefault("stations", {})
     path.write_text(
-        json.dumps(state, indent=2, sort_keys=True),
+        json.dumps(status, indent=2, sort_keys=True),
         encoding="utf-8",
     )
+
+
+@enforce_types(value=datetime)
+def format_ut_datetime(value: datetime) -> str:
+    """
+    Format a datetime as a timezone-free UT timestamp for email text.
+    """
+
+    if value.tzinfo is None:
+        value = value.replace(tzinfo=timezone.utc)
+
+    return value.astimezone(timezone.utc).strftime("%Y-%m-%d %H:%M:%S")
+
+
+@enforce_types(delta=timedelta)
+def format_duration(delta: timedelta) -> str:
+    """
+    Format a duration using years, days, hours, minutes, and seconds.
+    """
+
+    total_seconds = max(0, int(round(delta.total_seconds())))
+    units = [
+        ("year", 365 * 24 * 60 * 60),
+        ("day", 24 * 60 * 60),
+        ("hour", 60 * 60),
+        ("minute", 60),
+        ("second", 1),
+    ]
+    parts = []
+
+    for label, unit_seconds in units:
+        value, total_seconds = divmod(total_seconds, unit_seconds)
+        if value:
+            suffix = "" if value == 1 else "s"
+            parts.append(f"{value} {label}{suffix}")
+
+    return ", ".join(parts) if parts else "0 seconds"
+
+
+@enforce_types(value=int)
+def number_word(value: int) -> str:
+    """
+    Return a lowercase English word for small non-negative counts.
+    """
+
+    words = {
+        0: "zero",
+        1: "one",
+        2: "two",
+        3: "three",
+        4: "four",
+        5: "five",
+        6: "six",
+        7: "seven",
+        8: "eight",
+        9: "nine",
+        10: "ten",
+    }
+    return words.get(value, str(value))
+
+
+@enforce_types(path=(str, Path, type(None)))
+def load_availability_lookup(path: Path | None) -> dict | None:
+    """
+    Load a build_availability_lookup JSON file if it is configured and present.
+
+    The monitor treats this file as an optimisation/cache. Missing, malformed,
+    or incomplete lookup data should not stop monitoring because the archive
+    scan path can still calculate last-seen times directly from data files.
+    """
+
+    if path is None:
+        return None
+
+    path = Path(path)
+    if not path.exists():
+        return None
+
+    try:
+        lookup = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError):
+        return None
+
+    if not isinstance(lookup, dict):
+        return None
+
+    stations = lookup.get("stations")
+    if not isinstance(stations, dict):
+        return None
+
+    return lookup
+
+
+@enforce_types(value=(str, type(None)))
+def parse_lookup_datetime(value: str | None) -> datetime | None:
+    """
+    Parse an ISO datetime from the availability lookup as UTC.
+    """
+
+    if not value:
+        return None
+
+    try:
+        parsed = datetime.fromisoformat(value)
+    except ValueError:
+        return None
+
+    if parsed.tzinfo is None:
+        return parsed.replace(tzinfo=timezone.utc)
+
+    return parsed.astimezone(timezone.utc)
+
+
+@enforce_types(site_code=str, availability_lookup=(dict, type(None)))
+def latest_available_day_from_lookup(
+    site_code: str,
+    availability_lookup: dict | None,
+) -> datetime | None:
+    """
+    Return the latest UTC day marked available for a site in the lookup.
+    """
+
+    if availability_lookup is None:
+        return None
+
+    station = availability_lookup.get("stations", {}).get(site_code)
+    if not isinstance(station, dict):
+        return None
+
+    available_dates = station.get("available_dates", {})
+    if not isinstance(available_dates, dict):
+        return None
+
+    true_dates = sorted(
+        date_key
+        for date_key, has_data in available_dates.items()
+        if has_data is True
+    )
+    if not true_dates:
+        return None
+
+    try:
+        latest = datetime.fromisoformat(true_dates[-1])
+    except ValueError:
+        return None
+
+    if latest.tzinfo is None:
+        return latest.replace(tzinfo=timezone.utc)
+
+    return latest.astimezone(timezone.utc)
+
+
+@enforce_types(
+    availability_lookup=(dict, type(None)),
+    now=datetime,
+    max_age=(timedelta, type(None)),
+)
+def availability_lookup_is_fresh(
+    availability_lookup: dict | None,
+    now: datetime,
+    max_age: timedelta | None,
+) -> bool:
+    """
+    Return whether a loaded availability lookup is recent enough to trust.
+    """
+
+    if availability_lookup is None:
+        return False
+
+    if max_age is None:
+        return True
+
+    generated_at = parse_lookup_datetime(availability_lookup.get("generated_at"))
+    if generated_at is None:
+        return False
+
+    return now - generated_at <= max_age
 
 
 @enforce_types(site=SiteConfig, default_data_root=(str, Path, Mapping))
 def data_root_for_site(
     site: SiteConfig,
-    default_data_root: Path | Mapping[str, Path],
+    default_data_root: Path | str | Mapping[str, Path | str],
 ) -> Path:
     """
     Return the archive root to use for one site.
 
     Per-site ``SiteConfig.data_root`` takes precedence. Otherwise,
     ``default_data_root`` may be either one shared root path or a mapping keyed
-    by normalised site code.
+    by normalised site code. Mapping values may be strings or ``Path`` objects.
     """
 
     if site.data_root is not None:
@@ -314,51 +520,6 @@ def candidate_files_for_day(
     iaga_files.extend(sorted(iaga_dir.glob(f"{site_code}{ymd}*sec.sec")))
     iaga_files.extend(sorted(iaga_dir.glob(f"{site_code}{ymd}*min.min")))
     return list(dict.fromkeys(iaga_files))
-
-
-@enforce_types(
-    data_root=(str, Path),
-    site_code=str,
-    now=datetime,
-    lookback_days=int,
-)
-def candidate_files(
-    data_root: Path,
-    site_code: str,
-    now: datetime,
-    lookback_days: int,
-) -> Iterable[Path]:
-    """
-    Yield existing candidate files for a site, newest day first.
-
-    This allows the monitor to handle inactivity across midnight or across
-    several days. For example, if today's file contains only NaNs, the monitor
-    can look back to yesterday's IAGA or TXT file to find the true last valid
-    measurement.
-
-    Parameters
-    ----------
-    data_root:
-        Root data directory.
-    site_code:
-        Magnetometer site code.
-    now:
-        Current datetime.
-    lookback_days:
-        Number of days to search backwards.
-
-    Yields
-    ------
-    pathlib.Path
-        Existing files only, in preferred read order.
-    """
-
-    for offset in range(lookback_days):
-        day = now - timedelta(days=offset)
-
-        for path in candidate_files_for_day(data_root, site_code, day, now):
-            if path.exists():
-                yield path
 
 
 @enforce_types(path=(str, Path))
@@ -460,51 +621,39 @@ def latest_valid_time(stream: DataStream) -> datetime | None:
     return None
 
 
-@enforce_types(
-    site_code=str,
-    now=datetime,
-    data_root=(str, Path),
-    lookback_days=int,
-)
-def get_last_measurement(
+@enforce_types(site_code=str, day=datetime, data_root=(str, Path))
+def get_last_measurement_for_day(
     site_code: str,
-    now: datetime,
+    day: datetime,
     data_root: Path,
-    lookback_days: int,
 ) -> datetime | None:
     """
-    Find the latest valid measurement time for a site.
+    Find the latest valid measurement for a site on one UTC day.
 
-    This is the main file-reading function used by the monitor. It searches
-    recent files in preferred order, loads each file, and returns the newest
-    timestamp with valid x/y/z data.
-
-    Parameters
-    ----------
-    site_code:
-        Magnetometer site code.
-    now:
-        Current datetime.
-    data_root:
-        Root data directory.
-    lookback_days:
-        Number of days to search backwards.
-
-    Returns
-    -------
-    datetime.datetime or None
-        Latest valid measurement time, or ``None`` if no valid data are found
-        in the search window.
+    This is used with the availability lookup: the lookup says which days have
+    data, and this function reads that day's IAGA files to get the actual latest
+    timestamp.
     """
 
-    for path in candidate_files(data_root, site_code, now, lookback_days):
-        stream = read_magnetometer_file(path)
-        last_seen = latest_valid_time(stream)
+    latest: datetime | None = None
 
-        if last_seen is not None:
-            return last_seen
+    for path in candidate_files_for_day(data_root, site_code, day, today=day):
+        if not path.exists():
+            continue
 
-    return None
+        try:
+            stream = read(str(path))
+            last_seen = latest_valid_time(stream)
+        except Exception:
+            continue
+
+        if last_seen is None:
+            continue
+
+        if latest is None or last_seen > latest:
+            latest = last_seen
+
+    return latest
 
 
 @enforce_types(
@@ -561,7 +710,7 @@ def event_rows_html(events: list[SiteStatusEvent]) -> str:
             "<tr>"
             f"<td>{escape(event.site_name)} ({escape(event.site_code)})</td>"
             f"<td>{escape(event.last_seen_at)}</td>"
-            f"<td>{escape(str(event.minutes_since_last))}</td>"
+            f"<td>{escape(event.time_since_last)}</td>"
             "</tr>"
         )
 
@@ -590,7 +739,7 @@ def send_batched_status_email(
     site_rows = event_rows_html(events)
     values = {
         **values,
-        "site_count": len(events),
+        "site_count": number_word(len(events)),
         "site_label": "site" if len(events) == 1 else "sites",
         "site_verb": "is" if len(events) == 1 else "are",
     }
@@ -599,6 +748,11 @@ def send_batched_status_email(
     recipients = load_recipients(cfg.recipients_path)
 
     template_text = template_path.read_text(encoding="utf-8")
+    if "checked_at" in values:
+        checked_at = parse_lookup_datetime(str(values["checked_at"]))
+        if checked_at is not None:
+            values["checked_at"] = format_ut_datetime(checked_at)
+
     safe_values = {
         key: escape(str(value)) for key, value in values.items()
     }
@@ -618,12 +772,19 @@ def send_batched_status_email(
     )
 
 
-@enforce_types(site=SiteConfig, cfg=MonitorConfig, state=dict, now=datetime)
+@enforce_types(
+    site=SiteConfig,
+    cfg=MonitorConfig,
+    state=dict,
+    now=datetime,
+    availability_lookup=(dict, type(None)),
+)
 def check_site(
     site: SiteConfig,
     cfg: MonitorConfig,
     state: dict,
     now: datetime,
+    availability_lookup: dict | None = None,
 ) -> tuple[str, SiteStatusEvent] | None:
     """
     Check one magnetometer site and return an outage/restored event if needed.
@@ -652,7 +813,7 @@ def check_site(
         {
             "offline": False,
             "status": "unknown",
-            "last_seen_at": None,
+            "last_measurement": None,
             "last_alert_sent_at": None,
             "last_restored_sent_at": None,
         },
@@ -668,24 +829,32 @@ def check_site(
         site_state["status"] = "inactive"
         return None
 
-    last_seen = get_last_measurement(
-        site_code=site.code,
-        now=now,
-        data_root=data_root_for_site(site, cfg.data_root),
-        lookback_days=cfg.lookback_days,
+    site_data_root = data_root_for_site(site, cfg.data_root)
+    latest_available_day = latest_available_day_from_lookup(
+        site.code,
+        availability_lookup,
     )
+    last_seen = None
+
+    if latest_available_day is not None:
+        last_seen = get_last_measurement_for_day(
+            site_code=site.code,
+            day=latest_available_day,
+            data_root=site_data_root,
+        )
 
     if last_seen is None:
         age = None
         is_offline = True
-        minutes_since_last = "unknown"
+        time_since_last = "unknown"
         last_seen_text = "No valid data found"
+        site_state["last_measurement"] = None
     else:
         age = now - last_seen
         is_offline = age > cfg.max_inactivity
-        minutes_since_last = round(age.total_seconds() / 60, 1)
-        last_seen_text = last_seen.isoformat()
-        site_state["last_seen_at"] = last_seen.isoformat()
+        time_since_last = format_duration(age)
+        last_seen_text = format_ut_datetime(last_seen)
+        site_state["last_measurement"] = last_seen.isoformat()
 
     was_offline = bool(site_state.get("offline", False))
 
@@ -699,11 +868,11 @@ def check_site(
                 site_code=site.code,
                 site_name=site.name,
                 last_seen_at=last_seen_text,
-                minutes_since_last=minutes_since_last,
+                time_since_last=time_since_last,
             ),
         )
 
-    elif not is_offline and was_offline:
+    elif not is_offline and (was_offline or cfg.force_restored_email):
         site_state["offline"] = False
         site_state["status"] = "online"
         site_state["last_restored_sent_at"] = now.isoformat()
@@ -713,7 +882,7 @@ def check_site(
                 site_code=site.code,
                 site_name=site.name,
                 last_seen_at=last_seen_text,
-                minutes_since_last=minutes_since_last,
+                time_since_last=time_since_last,
             ),
         )
 
@@ -736,12 +905,29 @@ def run_monitor(sites: list[SiteConfig], cfg: MonitorConfig) -> None:
     """
 
     now = datetime.now(timezone.utc)
-    state = load_state(cfg.state_path)
+    if cfg.reset_monitor_status:
+        monitor_status = {"generated_at": None, "stations": {}}
+    else:
+        monitor_status = load_monitor_status(cfg.monitor_status_path)
+    state = monitor_status.setdefault("stations", {})
+    availability_lookup = load_availability_lookup(cfg.availability_lookup_path)
+    if not availability_lookup_is_fresh(
+        availability_lookup,
+        now,
+        cfg.availability_lookup_max_age,
+    ):
+        availability_lookup = None
     outage_events: list[SiteStatusEvent] = []
     restored_events: list[SiteStatusEvent] = []
 
     for site in sites:
-        event = check_site(site, cfg, state, now)
+        event = check_site(
+            site,
+            cfg,
+            state,
+            now,
+            availability_lookup,
+        )
 
         if event is None:
             continue
@@ -758,7 +944,7 @@ def run_monitor(sites: list[SiteConfig], cfg: MonitorConfig) -> None:
         subject = (
             f"Magnetometer warning: {outage_events[0].site_code} is not sending data"
             if site_count == 1
-            else f"Magnetometer warning: {site_count} sites are not sending data"
+            else f"Magnetometer warning: {number_word(site_count)} sites are not sending data"
         )
         send_batched_status_email(
             subject=subject,
@@ -766,7 +952,7 @@ def run_monitor(sites: list[SiteConfig], cfg: MonitorConfig) -> None:
             cfg=cfg,
             values={
                 "threshold_minutes": round(cfg.max_inactivity.total_seconds() / 60, 1),
-                "checked_at": now.isoformat(),
+                "checked_at": format_ut_datetime(now),
             },
             events=outage_events,
         )
@@ -776,19 +962,19 @@ def run_monitor(sites: list[SiteConfig], cfg: MonitorConfig) -> None:
         subject = (
             f"Magnetometer restored: {restored_events[0].site_code} is sending data again"
             if site_count == 1
-            else f"Magnetometer restored: {site_count} sites are sending data again"
+            else f"Magnetometer restored: {number_word(site_count)} sites are sending data again"
         )
         send_batched_status_email(
             subject=subject,
             template_path=cfg.restored_email_template,
             cfg=cfg,
             values={
-                "checked_at": now.isoformat(),
+                "checked_at": format_ut_datetime(now),
             },
             events=restored_events,
         )
 
-    save_state(cfg.state_path, state)
+    save_monitor_status(cfg.monitor_status_path, monitor_status, now)
 
 @enforce_types(seconds=(int, float, np.number, type(None)))
 def frequency_from_seconds(seconds: float | None) -> tuple[str | None, int | None]:
@@ -1255,24 +1441,3 @@ def build_availability_lookup(
 
     output_path.parent.mkdir(parents=True, exist_ok=True)
     output_path.write_text(json.dumps(lookup, indent=2), encoding="utf-8")
-
-if __name__ == "__main__":
-    sites = [
-        SiteConfig(code="dun"),
-        SiteConfig(code="val"),
-        SiteConfig(code='bir'),
-        SiteConfig(code="arm", permanently_off=True),
-    ]
-
-    cfg = MonitorConfig(
-        data_root=Path("/home/simon/Documents/magnetometer_archive/"),
-        state_path=Path("./magnetometer_monitor_state.json"),
-        email_config_path=Path("/home/simon/gits/MAGIE/live_scripts/alert_config/email_config.toml"),
-        recipients_path=Path("/home/simon/gits/MAGIE/live_scripts/alert_config/recipients.txt"),
-        outage_email_template=Path("/home/simon/gits/MAGIE/src/magie/assets/email_templates/magnetometer_outage.html"),
-        restored_email_template=Path("/home/simon/gits/MAGIE/src/magie/assets/email_templates/magnetometer_restored.html"),
-        max_inactivity=timedelta(hours=1),
-        lookback_days=7,
-    )
-
-    run_monitor(sites, cfg)
