@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "magie"                       # pip name; usually lower-case
-version = "3.0.1"
+version = "3.1.0"
 description = "K-index and magnetometer tools for MagIE."
 readme = "README.md"
 requires-python = ">=3.10,<3.13"
@@ -36,6 +36,10 @@ test = [
   "pytest>=8.3.0",
 ]
 alerts = ["mastodon.py>=2.1.4"
+]
+monitor = [
+  "plotly>=5.24.0",
+  "secsy @ git+https://github.com/klaundal/secsy.git",
 ]
 [project.urls]
 homepage = "https://github.com/magie-network/MAGIE"
