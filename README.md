@@ -16,6 +16,12 @@ pip install "magie[alerts] @ git+https://github.com/magie-network/MAGIE.git@3.1.
 
 This will install mastodon for mastodon alerts
 
+For magnetometer monitor map support with `pip`, install the `monitor` extra:
+
+pip install "magie[monitor] @ git+https://github.com/magie-network/MAGIE.git@3.1.0"
+
+This will install Plotly and secsy for the magnetometer status map tools.
+
 This package temporarily depends on a GitHub commit of geomagpy
 because the circular import fix is not yet released on PyPI.
 
@@ -31,6 +37,11 @@ does not install the `magie` package itself. For local development after
 cloning the repository, install the package manually if needed, for example:
 
 pip install -e .
+
+For local development with the monitor map dependencies, install the
+`monitor` extra:
+
+pip install -e ".[monitor]"
 
 For alert posting support, use the alerts environment instead:
 
