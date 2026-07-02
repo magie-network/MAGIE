@@ -207,6 +207,10 @@ class MagnetometerReadResult:
     cadence_path: Path
 
 
+class SiteCheckError(RuntimeError):
+    """Raised when a site alert check cannot determine a last-valid timestamp."""
+
+
 @enforce_types(path=(str, Path))
 def load_monitor_status(path: Path) -> dict:
     """
@@ -408,6 +412,43 @@ def latest_available_day_from_lookup(
         return latest.replace(tzinfo=timezone.utc)
 
     return latest.astimezone(timezone.utc)
+
+
+@enforce_types(site_code=str, availability_lookup=(dict, type(None)))
+def last_valid_measurement_from_lookup(
+    site_code: str,
+    availability_lookup: dict | None,
+) -> datetime | None:
+    """
+    Return the last valid measurement timestamp stored in the availability lookup.
+
+    This is a fallback for alert checks when the latest daily IAGA file cannot
+    be read. If the lookup does not contain a parseable timestamp, the monitor
+    should treat the check as inconclusive rather than alerting with an unknown
+    last-seen time.
+    """
+
+    if availability_lookup is None:
+        return None
+
+    station = availability_lookup.get("stations", {}).get(site_code)
+    if not isinstance(station, dict):
+        return None
+
+    last_valid = parse_lookup_datetime(station.get("last_valid_measurement"))
+    if last_valid is not None:
+        return last_valid
+
+    dated_measurements = station.get("latest_valid_measurement_by_date", {})
+    if not isinstance(dated_measurements, dict):
+        return None
+
+    for date_key in sorted(dated_measurements, reverse=True):
+        last_valid = parse_lookup_datetime(dated_measurements.get(date_key))
+        if last_valid is not None:
+            return last_valid
+
+    return None
 
 
 @enforce_types(
@@ -844,11 +885,18 @@ def check_site(
         )
 
     if last_seen is None:
-        age = None
-        is_offline = True
-        time_since_last = "unknown"
-        last_seen_text = "No valid data found"
-        site_state["last_measurement"] = None
+        last_seen = last_valid_measurement_from_lookup(
+            site.code,
+            availability_lookup,
+        )
+
+    if last_seen is None:
+        site_state["status"] = "check_failed"
+        raise SiteCheckError(
+            f"Could not determine last valid measurement for site {site.code!r}. "
+            "Suppressing alert email rather than sending an unknown last-seen time."
+        )
+
     else:
         age = now - last_seen
         is_offline = age > cfg.max_inactivity
