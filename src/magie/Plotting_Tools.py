@@ -12,7 +12,7 @@ from matplotlib.contour import ContourSet
 from matplotlib.axes import Axes
 from matplotlib.colors import Colormap, Normalize
 from matplotlib.ticker import MaxNLocator
-from collections.abc import Callable
+from collections.abc import Callable, Mapping
 from pathlib import Path
 from typing import Any
 from magpy.stream import DataStream
@@ -1257,9 +1257,8 @@ def _read_line_plot_iaga_files(paths):
     start=(str, pd.Timestamp, np.datetime64),
     end=(str, pd.Timestamp, np.datetime64),
     site_list=(str, list, tuple, set),
-    archive_root=(str, Path),
-    output_root=(str, Path, type(None)),
-    flo_root=(str, Path),
+    load_roots=Mapping,
+    output_root=(str, Path),
     max_workers=(int, type(None)),
     preprocessing=(Callable, type(None)),
     error_log_path=(str, Path, type(None)),
@@ -1268,12 +1267,11 @@ def daily_line_plots_full_archive(
     start,
     end,
     site_list,
-    archive_root="/mnt/data.magie.ie/magnetometer_archive",
-    output_root=None,
-    flo_root="/mnt/data.magie.ie/mag_data/flo",
+    load_roots,
+    output_root,
     max_workers=None,
     preprocessing=None,
-    error_log_path="/home/sysop/magie_operational_scripts/logs/daily_line_plot_errors_{site_code}.log",
+    error_log_path=None,
 ):
     """
     Generate daily Bx/By/Bz and D/H/dH line plots for the full archive.
@@ -1284,13 +1282,11 @@ def daily_line_plots_full_archive(
         Inclusive date range to plot.
     site_list : str or sequence of str
         Site code or site codes to process.
-    archive_root : str or pathlib.Path, optional
-        Main archive root used for non-FLO input and all PNG output.
-    output_root : str or pathlib.Path or None, optional
-        PNG output root. ``None`` uses ``archive_root``.
-    flo_root : str or pathlib.Path, optional
-        FLO archive root. If this contains a nested ``flo`` directory, that
-        directory is used.
+    load_roots : mapping
+        Mapping of ``site_code`` to IAGA archive root. This allows each site to
+        load from its own path while all plots save to ``output_root``.
+    output_root : str or pathlib.Path
+        PNG output root.
     max_workers : int or None, optional
         Number of sites to process in parallel. ``None`` picks a bounded
         default.
@@ -1325,11 +1321,11 @@ def daily_line_plots_full_archive(
     if not site_codes:
         return [], []
 
-    archive_root = Path(archive_root)
-    output_root = archive_root if output_root is None else Path(output_root)
-    flo_root = Path(flo_root)
-    if (flo_root / "flo").is_dir():
-        flo_root = flo_root / "flo"
+    output_root = Path(output_root)
+    load_roots = {site_code: Path(path) for site_code, path in load_roots.items()}
+    missing_load_roots = [site_code for site_code in site_codes if site_code not in load_roots]
+    if missing_load_roots:
+        raise KeyError(f"No load root provided for site(s): {missing_load_roots}")
 
     dates = pd.date_range(start, end, freq="D")
 
@@ -1386,7 +1382,7 @@ def daily_line_plots_full_archive(
         """
         results = []
         errors = []
-        iaga_base_path = flo_root if site_code == "flo" else archive_root
+        iaga_base_path = load_roots[site_code]
         met = get_site_metadata(site_code)
 
         for plot_date in dates:
