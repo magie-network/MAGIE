@@ -8,10 +8,14 @@ import matplotlib.dates as mdates
 import warnings
 import matplotlib.colors as mcolors
 import os
+from matplotlib.contour import ContourSet
+from matplotlib.axes import Axes
+from matplotlib.colors import Colormap, Normalize
 from matplotlib.ticker import MaxNLocator
 from collections.abc import Callable
 from pathlib import Path
 from typing import Any
+from magpy.stream import DataStream
 
 from magie.utils import enforce_types, get_asset_path
 
@@ -148,14 +152,14 @@ class ArgumentError(Exception):
     """Error raised when plotting helper arguments are invalid."""
 
 
-@enforce_types(ax=object, url=str)
-def add_image(ax: Any, url: str) -> Any:
+@enforce_types(ax=Axes, url=str)
+def add_image(ax: Axes, url: str) -> Any:
     """
     Download an image and attach it to a Matplotlib axis as an annotation artist.
 
     Parameters
     ----------
-    ax : object
+    ax : matplotlib.axes.Axes
         Matplotlib axis that will receive the image artist.
     url : str
         URL of the image to download.
@@ -182,13 +186,13 @@ def add_image(ax: Any, url: str) -> Any:
 
 @enforce_types(
     val=(int, float, np.ndarray, list, tuple, np.number),
-    norm=object,
-    cmap=(str, object),
+    norm=Normalize,
+    cmap=(str, Colormap),
 )
 def get_color(
     val: int | float | np.number | np.ndarray | list[Any] | tuple[Any, ...],
-    norm: Any,
-    cmap: str | Any,
+    norm: Normalize,
+    cmap: str | Colormap,
 ) -> tuple[float, float, float, float] | np.ndarray:
     """
     Return RGBA color values for scalar or array-like data.
@@ -197,9 +201,9 @@ def get_color(
     ----------
     val : scalar or array-like
         Input value or values to map through the colormap.
-    norm : object
+    norm : matplotlib.colors.Normalize
         Matplotlib normalization object.
-    cmap : str or object
+    cmap : str or matplotlib.colors.Colormap
         Colormap name or Matplotlib colormap object.
 
     Returns
@@ -223,7 +227,7 @@ def get_color(
 
 
 @enforce_types(
-    contour=object,
+    contour=ContourSet,
     xpad=(int, float, type(None)),
     ypad=(int, float, type(None)),
     sides=(list, str),
@@ -233,7 +237,7 @@ def get_color(
     y_splits=(list, str, type(None)),
 )
 def contour_labels(
-    contour: Any,
+    contour: ContourSet,
     xpad: int | float | None = None,
     ypad: int | float | None = None,
     sides: list[str] | str = ["left", "right"],
@@ -248,8 +252,9 @@ def contour_labels(
 
     Parameters
     ----------
-    contour : object
-        Matplotlib contour set object.
+    contour : matplotlib.contour.ContourSet
+        Matplotlib contour set returned by ``Axes.contour`` or
+        ``Axes.contourf``.
     xpad : int or float or None, optional
         Horizontal offset applied to labels on the left or right edges. When
         omitted, a small fraction of the axis width is used.
@@ -412,20 +417,20 @@ def contour_labels(
 
 
 @enforce_types(
-    data=object,
+    data=DataStream,
     logo_path=(str, Path, type(None)),
     show_logo=bool,
     auto_xlim=bool,
 )
-def plot_BxByBz(data: Any, logo_path: str | Path | None = None, show_logo= False, auto_xlim=True, figsize_scale=3, filter=True):
+def plot_BxByBz(data: DataStream, logo_path: str | Path | None = None, show_logo= False, auto_xlim=True, figsize_scale=3, filter=True):
     """
     Plot the X, Y, and Z magnetic field components as stacked time series.
 
     Parameters
     ----------
-    data : object
-        Time-indexed magnetic dataset supporting ``copy()``, ``filter()``, and
-        column access for ``time``, ``x``, ``y``, and ``z``.
+    data : magpy.stream.DataStream
+        Time-indexed magnetic dataset containing ``time``, ``x``, ``y``, and
+        ``z`` columns.
     logo_path : str or pathlib.Path or None, optional
         Optional path to a logo image to place in the lower-right corner of
         each subplot. When omitted, the packaged MagIE logo is used if
@@ -524,20 +529,20 @@ def plot_BxByBz(data: Any, logo_path: str | Path | None = None, show_logo= False
     return fig, ax_Bx, ax_By, ax_Bz
 
 @enforce_types(
-    data=object,
+    data=DataStream,
     logo_path=(str, Path, type(None)),
     show_logo=bool,
     auto_xlim=bool,
 )
-def plot_dH(data, logo_path=None, show_logo= False, auto_xlim=True, figsize_scale=3, filter=True):
+def plot_dH(data: DataStream, logo_path=None, show_logo= False, auto_xlim=True, figsize_scale=3, filter=True):
     """
     Plot declination, horizontal intensity, and the first difference of H.
 
     Parameters
     ----------
-    data : object
-        Time-indexed magnetic dataset supporting ``copy()``, ``filter()``, and
-        column access for ``time``, ``x``, and ``y``.
+    data : magpy.stream.DataStream
+        Time-indexed magnetic dataset containing ``time``, ``x``, and ``y``
+        columns.
     logo_path : str or pathlib.Path or None, optional
         Optional path to a logo image to place in the lower-right corner of
         each subplot. When omitted, the packaged MagIE logo is used if
