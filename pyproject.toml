@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "magie"                       # pip name; usually lower-case
-version = "3.1.2"
+version = "3.2.0"
 description = "K-index and magnetometer tools for MagIE."
 readme = "README.md"
 requires-python = ">=3.10,<3.13"
