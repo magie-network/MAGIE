@@ -7,10 +7,15 @@ import pandas as pd
 import matplotlib.dates as mdates
 import warnings
 import matplotlib.colors as mcolors
+import os
+from matplotlib.contour import ContourSet
+from matplotlib.axes import Axes
+from matplotlib.colors import Colormap, Normalize
 from matplotlib.ticker import MaxNLocator
 from collections.abc import Callable
 from pathlib import Path
 from typing import Any
+from magpy.stream import DataStream
 
 from magie.utils import enforce_types, get_asset_path
 
@@ -147,14 +152,14 @@ class ArgumentError(Exception):
     """Error raised when plotting helper arguments are invalid."""
 
 
-@enforce_types(ax=object, url=str)
-def add_image(ax: Any, url: str) -> Any:
+@enforce_types(ax=Axes, url=str)
+def add_image(ax: Axes, url: str) -> Any:
     """
     Download an image and attach it to a Matplotlib axis as an annotation artist.
 
     Parameters
     ----------
-    ax : object
+    ax : matplotlib.axes.Axes
         Matplotlib axis that will receive the image artist.
     url : str
         URL of the image to download.
@@ -181,13 +186,13 @@ def add_image(ax: Any, url: str) -> Any:
 
 @enforce_types(
     val=(int, float, np.ndarray, list, tuple, np.number),
-    norm=object,
-    cmap=(str, object),
+    norm=Normalize,
+    cmap=(str, Colormap),
 )
 def get_color(
     val: int | float | np.number | np.ndarray | list[Any] | tuple[Any, ...],
-    norm: Any,
-    cmap: str | Any,
+    norm: Normalize,
+    cmap: str | Colormap,
 ) -> tuple[float, float, float, float] | np.ndarray:
     """
     Return RGBA color values for scalar or array-like data.
@@ -196,9 +201,9 @@ def get_color(
     ----------
     val : scalar or array-like
         Input value or values to map through the colormap.
-    norm : object
+    norm : matplotlib.colors.Normalize
         Matplotlib normalization object.
-    cmap : str or object
+    cmap : str or matplotlib.colors.Colormap
         Colormap name or Matplotlib colormap object.
 
     Returns
@@ -221,93 +226,8 @@ def get_color(
     return rgba
 
 
-@enforce_types(ax=object, grid=object, resolution=str, facecolor=str)
-def add_land(
-    ax: Any,
-    grid: Any,
-    resolution: str = "50m",
-    facecolor: str = "darkgreen",
-    **kwargs: Any,
-) -> None:
-    """
-    Add land polygons to a map axis using projected coastlines from a grid object.
-
-    Parameters
-    ----------
-    ax : object
-        Matplotlib axis that will receive the polygon patches.
-    grid : object
-        Grid object providing ``projection.get_projected_coastlines()``.
-    resolution : str, optional
-        Coastline resolution passed to the grid projection.
-    facecolor : str, optional
-        Fill color used for land polygons.
-    **kwargs : dict
-        Additional keyword arguments passed to ``PathPatch``.
-    """
-    from matplotlib.path import Path
-    from matplotlib.patches import PathPatch
-
-    plot_kwargs = dict(facecolor=facecolor, edgecolor='none', zorder=1)
-    plot_kwargs.update(kwargs)
-    land_patches = []
-    for cl in grid.projection.get_projected_coastlines(resolution=resolution):
-        x, y = cl
-        if len(x) < 3:
-            continue  # can't form a polygon
-        # Build a closed path; each coastline entry is treated as a polygon ring.
-        verts = np.column_stack([x, y])
-        if not (verts[0] == verts[-1]).all():
-            verts = np.vstack([verts, verts[0]])
-
-        # Path codes: MOVETO, then LINETO..., then CLOSEPOLY
-        codes = np.full(len(verts), Path.LINETO, dtype=np.uint8)
-        codes[0] = Path.MOVETO
-        codes[-1] = Path.CLOSEPOLY
-
-        path = Path(verts, codes)
-        patch = PathPatch(path, **plot_kwargs)  # land under outlines/grid
-        land_patches.append(patch)
-
-    for p in land_patches:
-        ax.add_patch(p)
-
-
-@enforce_types(ax=object, grid=object, facecolor=str)
-def add_ocean(
-    ax: Any,
-    grid: Any,
-    facecolor: str = "#3498db",
-    **kwargs: Any,
-) -> None:
-    """
-    Add a rectangular ocean background patch covering the full grid extent.
-
-    Parameters
-    ----------
-    ax : object
-        Matplotlib axis that will receive the rectangle patch.
-    grid : object
-        Grid object exposing ``xi_min``, ``xi_max``, ``eta_min``, and ``eta_max``.
-    facecolor : str, optional
-        Fill color used for the ocean patch.
-    **kwargs : dict
-        Additional keyword arguments passed to ``Rectangle``.
-    """
-    from matplotlib.patches import Rectangle
-
-    plot_kwargs = dict(facecolor=facecolor, edgecolor='none', zorder=-5)
-    plot_kwargs.update(kwargs)
-
-    x0, x1 = grid.xi_min, grid.xi_max
-    y0, y1 = grid.eta_min, grid.eta_max
-
-    ocean_patch = Rectangle((x0, y0), x1 - x0, y1 - y0, **plot_kwargs)
-    ax.add_patch(ocean_patch)
-
-
 @enforce_types(
-    contour=object,
+    contour=ContourSet,
     xpad=(int, float, type(None)),
     ypad=(int, float, type(None)),
     sides=(list, str),
@@ -317,7 +237,7 @@ def add_ocean(
     y_splits=(list, str, type(None)),
 )
 def contour_labels(
-    contour: Any,
+    contour: ContourSet,
     xpad: int | float | None = None,
     ypad: int | float | None = None,
     sides: list[str] | str = ["left", "right"],
@@ -332,8 +252,9 @@ def contour_labels(
 
     Parameters
     ----------
-    contour : object
-        Matplotlib contour set object.
+    contour : matplotlib.contour.ContourSet
+        Matplotlib contour set returned by ``Axes.contour`` or
+        ``Axes.contourf``.
     xpad : int or float or None, optional
         Horizontal offset applied to labels on the left or right edges. When
         omitted, a small fraction of the axis width is used.
@@ -496,20 +417,20 @@ def contour_labels(
 
 
 @enforce_types(
-    data=object,
+    data=DataStream,
     logo_path=(str, Path, type(None)),
     show_logo=bool,
     auto_xlim=bool,
 )
-def plot_BxByBz(data: Any, logo_path: str | Path | None = None, show_logo= False, auto_xlim=True, figsize_scale=3, filter=True):
+def plot_BxByBz(data: DataStream, logo_path: str | Path | None = None, show_logo= False, auto_xlim=True, figsize_scale=3, filter=True):
     """
     Plot the X, Y, and Z magnetic field components as stacked time series.
 
     Parameters
     ----------
-    data : object
-        Time-indexed magnetic dataset supporting ``copy()``, ``filter()``, and
-        column access for ``time``, ``x``, ``y``, and ``z``.
+    data : magpy.stream.DataStream
+        Time-indexed magnetic dataset containing ``time``, ``x``, ``y``, and
+        ``z`` columns.
     logo_path : str or pathlib.Path or None, optional
         Optional path to a logo image to place in the lower-right corner of
         each subplot. When omitted, the packaged MagIE logo is used if
@@ -608,20 +529,20 @@ def plot_BxByBz(data: Any, logo_path: str | Path | None = None, show_logo= False
     return fig, ax_Bx, ax_By, ax_Bz
 
 @enforce_types(
-    data=object,
+    data=DataStream,
     logo_path=(str, Path, type(None)),
     show_logo=bool,
     auto_xlim=bool,
 )
-def plot_dH(data, logo_path=None, show_logo= False, auto_xlim=True, figsize_scale=3, filter=True):
+def plot_dH(data: DataStream, logo_path=None, show_logo= False, auto_xlim=True, figsize_scale=3, filter=True):
     """
     Plot declination, horizontal intensity, and the first difference of H.
 
     Parameters
     ----------
-    data : object
-        Time-indexed magnetic dataset supporting ``copy()``, ``filter()``, and
-        column access for ``time``, ``x``, and ``y``.
+    data : magpy.stream.DataStream
+        Time-indexed magnetic dataset containing ``time``, ``x``, and ``y``
+        columns.
     logo_path : str or pathlib.Path or None, optional
         Optional path to a logo image to place in the lower-right corner of
         each subplot. When omitted, the packaged MagIE logo is used if
@@ -1266,3 +1187,316 @@ def plot_xyzf(df, obs, start_time, end_time, plot_title, comps,
     # leave space at bottom of footer
     plt.tight_layout(rect=[0, 0.03, 1, 1])
     return fig, ax
+
+
+@enforce_types(
+    date=(str, pd.Timestamp, np.datetime64),
+    site_code=str,
+    base_path=(str, Path),
+)
+def _iaga_file_for_line_plot_date(date, site_code, base_path):
+    """
+    Return the first matching IAGA file for one site and UTC day.
+
+    Parameters
+    ----------
+    date : str or pandas.Timestamp or numpy.datetime64
+        Day to resolve in the archive.
+    site_code : str
+        Site identifier used as the file prefix.
+    base_path : str or pathlib.Path
+        Root of the IAGA archive for this site.
+
+    Returns
+    -------
+    pathlib.Path
+        First lexicographically sorted matching IAGA file.
+
+    Raises
+    ------
+    FileNotFoundError
+        If no matching file exists for the requested site/day.
+    """
+    date = pd.Timestamp(date).floor("1D")
+    output_dir = Path(base_path).joinpath(
+        *date.strftime("%Y-%m-%d").split("-"),
+        "iaga2002",
+    )
+    matches = sorted(output_dir.glob(f"{site_code}{date:%Y%m%d}*"))
+    if not matches:
+        raise FileNotFoundError(
+            f"No IAGA file found for {site_code} on {date.date()} in {output_dir}"
+        )
+    return matches[0]
+
+
+@enforce_types(paths=list)
+def _read_line_plot_iaga_files(paths):
+    """
+    Read and join IAGA files into one MagPy ``DataStream``.
+
+    Parameters
+    ----------
+    paths : list
+        Ordered file paths to read and append.
+
+    Returns
+    -------
+    magpy.stream.DataStream
+        Joined stream containing all provided files.
+    """
+    from magpy.stream import DataStream, join_streams, read
+
+    data = DataStream()
+    for path in paths:
+        data = join_streams(data, read(str(path)))
+    return data
+
+
+@enforce_types(
+    start=(str, pd.Timestamp, np.datetime64),
+    end=(str, pd.Timestamp, np.datetime64),
+    site_list=(str, list, tuple, set),
+    archive_root=(str, Path),
+    output_root=(str, Path, type(None)),
+    flo_root=(str, Path),
+    max_workers=(int, type(None)),
+    preprocessing=(Callable, type(None)),
+    error_log_path=(str, Path, type(None)),
+)
+def daily_line_plots_full_archive(
+    start,
+    end,
+    site_list,
+    archive_root="/mnt/data.magie.ie/magnetometer_archive",
+    output_root=None,
+    flo_root="/mnt/data.magie.ie/mag_data/flo",
+    max_workers=None,
+    preprocessing=None,
+    error_log_path="/home/sysop/magie_operational_scripts/logs/daily_line_plot_errors_{site_code}.log",
+):
+    """
+    Generate daily Bx/By/Bz and D/H/dH line plots for the full archive.
+
+    Parameters
+    ----------
+    start, end : str or pandas.Timestamp or numpy.datetime64
+        Inclusive date range to plot.
+    site_list : str or sequence of str
+        Site code or site codes to process.
+    archive_root : str or pathlib.Path, optional
+        Main archive root used for non-FLO input and all PNG output.
+    output_root : str or pathlib.Path or None, optional
+        PNG output root. ``None`` uses ``archive_root``.
+    flo_root : str or pathlib.Path, optional
+        FLO archive root. If this contains a nested ``flo`` directory, that
+        directory is used.
+    max_workers : int or None, optional
+        Number of sites to process in parallel. ``None`` picks a bounded
+        default.
+    preprocessing : collections.abc.Callable or None, optional
+        Function called as ``preprocessing(data)`` after the four-day MagPy
+        ``DataStream`` is read and before plotting. It must return a
+        ``DataStream``. ``None`` leaves the stream unchanged.
+    error_log_path : str or pathlib.Path or None, optional
+        Path for captured errors. The string may include ``{site_code}`` for
+        per-site logs. ``None`` disables error log writing.
+
+    Returns
+    -------
+    tuple[list, list]
+        ``results`` contains ``(site_code, date, output_file)`` tuples.
+        ``errors`` contains structured error records.
+    """
+    from joblib import Parallel, delayed
+    from magpy.stream import DataStream
+    from magie.utils import get_site_metadata, tqdm_joblib
+
+    start = pd.Timestamp(start).floor("1D")
+    end = pd.Timestamp(end).floor("1D")
+    if end < start:
+        raise ValueError("'end' must not be earlier than 'start'.")
+
+    if isinstance(site_list, str):
+        site_codes = [site_list]
+    else:
+        site_codes = list(site_list)
+
+    if not site_codes:
+        return [], []
+
+    archive_root = Path(archive_root)
+    output_root = archive_root if output_root is None else Path(output_root)
+    flo_root = Path(flo_root)
+    if (flo_root / "flo").is_dir():
+        flo_root = flo_root / "flo"
+
+    dates = pd.date_range(start, end, freq="D")
+
+    def error_record(exc, site_code, date, stage):
+        """
+        Build a structured error dictionary for one failed site/day stage.
+
+        The record is designed for both return values and tab-separated log
+        output, including traceback origin details when available.
+        """
+        import traceback
+
+        frames = traceback.extract_tb(exc.__traceback__)
+        origin = frames[-1] if frames else None
+        return {
+            "timestamp": pd.Timestamp.utcnow().isoformat(),
+            "site": site_code,
+            "date": pd.Timestamp(date).strftime("%Y-%m-%d"),
+            "stage": stage,
+            "error_type": type(exc).__name__,
+            "message": str(exc),
+            "error_file": origin.filename if origin else "",
+            "error_line": origin.lineno if origin else "",
+            "error_function": origin.name if origin else "",
+        }
+
+    def append_errors(path, errors):
+        """
+        Append structured line-plot errors to a tab-separated log file.
+
+        Parent directories are created as needed. Empty error lists are ignored
+        so successful site runs do not create empty log files.
+        """
+        if not errors:
+            return
+        path = Path(path)
+        path.parent.mkdir(parents=True, exist_ok=True)
+        with path.open("a", encoding="utf-8") as log_file:
+            for error in errors:
+                log_file.write(
+                    "{timestamp}\t{site}\t{date}\t{stage}\t{error_type}\t"
+                    "{error_file}\t{error_line}\t{error_function}\t{message}\n".format(
+                        **error
+                    )
+                )
+
+    def process_site(site_code):
+        """
+        Generate all requested line plots for one site.
+
+        Returns a pair ``(results, errors)`` where results are output PNG
+        records and errors are structured dictionaries. This function is kept
+        self-contained so it can run in a joblib worker process.
+        """
+        results = []
+        errors = []
+        iaga_base_path = flo_root if site_code == "flo" else archive_root
+        met = get_site_metadata(site_code)
+
+        for plot_date in dates:
+            try:
+                iaga_paths = [
+                    _iaga_file_for_line_plot_date(date, site_code, iaga_base_path)
+                    for date in pd.date_range(
+                        plot_date - pd.Timedelta("3D"),
+                        plot_date,
+                        freq="D",
+                    )
+                ]
+                data = _read_line_plot_iaga_files(iaga_paths)
+                if preprocessing is not None:
+                    data = preprocessing(data)
+                    if not isinstance(data, DataStream):
+                        raise TypeError(
+                            "preprocessing must return a magpy.stream.DataStream, "
+                            f"got {type(data).__name__}."
+                        )
+            except Exception as exc:
+                errors.append(error_record(exc, site_code, plot_date, "read"))
+                continue
+
+            try:
+                fig, ax1, ax2, ax3 = plot_BxByBz(data, filter=False)
+                if site_code == "flo":
+                    fig.suptitle(
+                        f"BGS {met['station_name']} Bx, By, Bz",
+                        y=.95,
+                        fontsize=11 * 3,
+                    )
+                else:
+                    fig.suptitle(
+                        f"MagIE {met['station_name']} Bx, By, Bz",
+                        y=.95,
+                        fontsize=11 * 3,
+                    )
+                fig.subplots_adjust(left=0.2, right=0.95, bottom=0.15, top=0.9)
+                output_dir = output_root.joinpath(
+                    *plot_date.strftime("%Y-%m-%d").split("-"),
+                    "png",
+                )
+                output_dir.mkdir(parents=True, exist_ok=True)
+                output_file = output_dir / f"{site_code}{plot_date:%Y%m%d}_bxbybz_magpy.png"
+                fig.savefig(output_file)
+                plt.close(fig)
+                results.append((site_code, plot_date, output_file))
+            except Exception as exc:
+                errors.append(error_record(exc, site_code, plot_date, "BxByBz"))
+
+            try:
+                fig, ax1, ax2, ax3 = plot_dH(data, filter=False)
+                if site_code == "flo":
+                    fig.suptitle(
+                        f"BGS {met['station_name']} D, H, dH/dt",
+                        y=.95,
+                        fontsize=11 * 3,
+                    )
+                else:
+                    fig.suptitle(
+                        f"MagIE {met['station_name']} D, H, dH/dt",
+                        y=.95,
+                        fontsize=11 * 3,
+                    )
+                fig.subplots_adjust(left=0.2, right=0.95, bottom=0.15, top=0.9)
+                output_dir = output_root.joinpath(
+                    *plot_date.strftime("%Y-%m-%d").split("-"),
+                    "png",
+                )
+                output_dir.mkdir(parents=True, exist_ok=True)
+                output_file = output_dir / f"{site_code}{plot_date:%Y%m%d}_DHdH_magpy.png"
+                fig.savefig(output_file)
+                plt.close(fig)
+                results.append((site_code, plot_date, output_file))
+            except Exception as exc:
+                errors.append(error_record(exc, site_code, plot_date, "DHdH"))
+
+        if error_log_path is not None:
+            append_errors(
+                str(error_log_path).format(site_code=site_code),
+                errors,
+            )
+
+        return results, errors
+
+    if max_workers is None:
+        max_workers = min(len(site_codes), max(1, os.cpu_count() or 1))
+    else:
+        max_workers = max(1, min(int(max_workers), len(site_codes)))
+
+    if max_workers == 1:
+        site_outputs = [process_site(site_code) for site_code in site_codes]
+    else:
+        with tqdm_joblib(
+            total=len(site_codes),
+            desc_prefix="Generating line plots by site",
+            unit="site",
+        ):
+            site_outputs = Parallel(n_jobs=max_workers, prefer="processes")(
+                delayed(process_site)(site_code) for site_code in site_codes
+            )
+
+    results = []
+    errors = []
+    for site_results, site_errors in site_outputs:
+        results.extend(site_results)
+        errors.extend(site_errors)
+
+    results.sort(key=lambda item: (item[0], item[1], str(item[2])))
+    errors.sort(key=lambda item: (item["site"], item["date"], item["stage"]))
+
+    return results, errors
