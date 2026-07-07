@@ -18,8 +18,7 @@ Persistent IAGA files are expected at, for example:
 The IAGA filename type code may vary, for example ``psec`` for provisional or
 ``vsec`` for variation data.
 
-The monitor reads persistent IAGA-2002 files only. Legacy TXT files are
-expected to be converted by the live IAGA updater before monitoring runs.
+The monitor reads persistent IAGA-2002 files only.
 
 A site is considered active only if at least one of x, y, z contains a finite
 value at a timestamp. A timestamp with only NaNs is treated as missing data.
@@ -270,10 +269,33 @@ def format_ut_datetime(value: datetime) -> str:
     Format a datetime as a timezone-free UT timestamp for email text.
     """
 
-    if value.tzinfo is None:
-        value = value.replace(tzinfo=timezone.utc)
+    return as_utc_datetime(value).strftime("%Y-%m-%d %H:%M:%S")
 
-    return value.astimezone(timezone.utc).strftime("%Y-%m-%d %H:%M:%S")
+
+@enforce_types(value=datetime)
+def as_utc_datetime(value: datetime) -> datetime:
+    """
+    Return a timezone-aware UTC datetime.
+
+    Naive datetimes are interpreted as the host's local timezone before
+    conversion. This prevents local Irish time from being used directly as a
+    UTC IAGA archive date during summer time.
+    """
+
+    if value.tzinfo is None:
+        return value.astimezone(timezone.utc)
+
+    return value.astimezone(timezone.utc)
+
+
+@enforce_types(value=datetime)
+def utc_archive_day(value: datetime) -> datetime:
+    """
+    Return midnight UTC for the UTC archive day containing ``value``.
+    """
+
+    utc_value = as_utc_datetime(value)
+    return utc_value.replace(hour=0, minute=0, second=0, microsecond=0)
 
 
 @enforce_types(delta=timedelta)
@@ -414,10 +436,15 @@ def latest_available_day_from_lookup(
     return latest.astimezone(timezone.utc)
 
 
-@enforce_types(site_code=str, availability_lookup=(dict, type(None)))
+@enforce_types(
+    site_code=str,
+    availability_lookup=(dict, type(None)),
+    latest_allowed=(datetime, type(None)),
+)
 def last_valid_measurement_from_lookup(
     site_code: str,
     availability_lookup: dict | None,
+    latest_allowed: datetime | None = None,
 ) -> datetime | None:
     """
     Return the last valid measurement timestamp stored in the availability lookup.
@@ -425,7 +452,8 @@ def last_valid_measurement_from_lookup(
     This is a fallback for alert checks when the latest daily IAGA file cannot
     be read. If the lookup does not contain a parseable timestamp, the monitor
     should treat the check as inconclusive rather than alerting with an unknown
-    last-seen time.
+    last-seen time. When ``latest_allowed`` is provided, timestamps after that
+    instant are ignored so future-dated data cannot produce false restores.
     """
 
     if availability_lookup is None:
@@ -436,7 +464,10 @@ def last_valid_measurement_from_lookup(
         return None
 
     last_valid = parse_lookup_datetime(station.get("last_valid_measurement"))
-    if last_valid is not None:
+    if (
+        last_valid is not None
+        and (latest_allowed is None or last_valid <= latest_allowed)
+    ):
         return last_valid
 
     dated_measurements = station.get("latest_valid_measurement_by_date", {})
@@ -445,7 +476,10 @@ def last_valid_measurement_from_lookup(
 
     for date_key in sorted(dated_measurements, reverse=True):
         last_valid = parse_lookup_datetime(dated_measurements.get(date_key))
-        if last_valid is not None:
+        if (
+            last_valid is not None
+            and (latest_allowed is None or last_valid <= latest_allowed)
+        ):
             return last_valid
 
     return None
@@ -509,22 +543,14 @@ def data_root_for_site(
     data_root=(str, Path),
     site_code=str,
     day=datetime,
-    today=datetime,
 )
 def candidate_files_for_day(
     data_root: Path,
     site_code: str,
     day: datetime,
-    today: datetime,
 ) -> list[Path]:
     """
-    Return possible files for one site on one day, in preferred read order.
-
-    For today's date, the live TXT files are tried before IAGA files because the
-    IAGA files may not exist yet or may be stale.
-
-    For older dates, IAGA files are tried first because they are the converted
-    end-of-day products and can be read directly by MagPy.
+    Return possible IAGA files for one site on one day, in preferred read order.
 
     Parameters
     ----------
@@ -534,9 +560,6 @@ def candidate_files_for_day(
         Magnetometer site code.
     day:
         Date to search.
-    today:
-        Current date/time, used to decide whether ``day`` is today.
-
     Returns
     -------
     list[pathlib.Path]
@@ -544,12 +567,12 @@ def candidate_files_for_day(
     """
 
     data_root = Path(data_root)
+    day = utc_archive_day(day)
 
     yyyy = day.strftime("%Y")
     mm = day.strftime("%m")
     dd = day.strftime("%d")
     ymd = day.strftime("%Y%m%d")
-    doy = day.strftime("%j")
 
     day_dir = data_root / yyyy / mm / dd
 
@@ -569,8 +592,7 @@ def read_magnetometer_file_with_metadata(path: Path) -> MagnetometerReadResult:
     Read a magnetometer file and return the stream plus cadence metadata.
 
     IAGA ``.sec`` and ``.min`` files are read directly with
-    ``magpy.stream.read``. Legacy TXT files are not supported here; they must
-    be converted to persistent IAGA-2002 files before this monitor runs.
+    ``magpy.stream.read``. Other file types are not supported.
 
     Parameters
     ----------
@@ -604,23 +626,28 @@ def read_magnetometer_file_with_metadata(path: Path) -> MagnetometerReadResult:
 @enforce_types(path=(str, Path))
 def read_magnetometer_file(path: Path) -> DataStream:
     """
-    Read either an IAGA file or a legacy TXT file as a MagPy DataStream.
+    Read an IAGA file as a MagPy DataStream.
 
     This compatibility wrapper returns only the stream. Use
-    ``read_magnetometer_file_with_metadata`` when the caller also needs the
-    converted IAGA filename for cadence inference.
+    ``read_magnetometer_file_with_metadata`` when the caller also needs cadence
+    metadata.
     """
 
     return read_magnetometer_file_with_metadata(path).stream
 
-@enforce_types(stream=DataStream)
-def latest_valid_time(stream: DataStream) -> datetime | None:
+@enforce_types(stream=DataStream, latest_allowed=(datetime, type(None)))
+def latest_valid_time(
+    stream: DataStream,
+    latest_allowed: datetime | None = None,
+) -> datetime | None:
     """
     Find the latest timestamp where x, y, or z contains real data.
 
     MagPy streams may contain a full time grid even when data are missing.
     Therefore the latest timestamp alone is not enough. We only accept a
-    timestamp if at least one of ``x``, ``y`` or ``z`` is finite.
+    timestamp if at least one of ``x``, ``y`` or ``z`` is finite. When
+    ``latest_allowed`` is provided, valid samples after that instant are
+    ignored.
 
     Parameters
     ----------
@@ -646,27 +673,38 @@ def latest_valid_time(stream: DataStream) -> datetime | None:
     if len(times) == 0:
         return None
 
-    valid = np.isfinite(x) | np.isfinite(y) | np.isfinite(z)
+    if latest_allowed is not None:
+        latest_allowed = as_utc_datetime(latest_allowed)
 
-    if not np.any(valid):
-        return None
+    valid_values = np.isfinite(x) | np.isfinite(y) | np.isfinite(z)
+    latest = None
 
-    last_index = np.where(valid)[0][-1]
-    last_time = times[last_index]
-
-    if isinstance(last_time, datetime):
+    for last_time in times[valid_values]:
+        if not isinstance(last_time, datetime):
+            continue
         if last_time.tzinfo is None:
-            return last_time.replace(tzinfo=timezone.utc)
-        return last_time.astimezone(timezone.utc)
+            candidate = last_time.replace(tzinfo=timezone.utc)
+        else:
+            candidate = last_time.astimezone(timezone.utc)
+        if latest_allowed is not None and candidate > latest_allowed:
+            continue
+        if latest is None or candidate > latest:
+            latest = candidate
 
-    return None
+    return latest
 
 
-@enforce_types(site_code=str, day=datetime, data_root=(str, Path))
+@enforce_types(
+    site_code=str,
+    day=datetime,
+    data_root=(str, Path),
+    latest_allowed=(datetime, type(None)),
+)
 def get_last_measurement_for_day(
     site_code: str,
     day: datetime,
     data_root: Path,
+    latest_allowed: datetime | None = None,
 ) -> datetime | None:
     """
     Find the latest valid measurement for a site on one UTC day.
@@ -678,13 +716,13 @@ def get_last_measurement_for_day(
 
     latest: datetime | None = None
 
-    for path in candidate_files_for_day(data_root, site_code, day, today=day):
+    for path in candidate_files_for_day(data_root, site_code, day):
         if not path.exists():
             continue
 
         try:
             stream = read(str(path))
-            last_seen = latest_valid_time(stream)
+            last_seen = latest_valid_time(stream, latest_allowed=latest_allowed)
         except Exception:
             continue
 
@@ -882,12 +920,14 @@ def check_site(
             site_code=site.code,
             day=latest_available_day,
             data_root=site_data_root,
+            latest_allowed=now,
         )
 
     if last_seen is None:
         last_seen = last_valid_measurement_from_lookup(
             site.code,
             availability_lookup,
+            latest_allowed=now,
         )
 
     if last_seen is None:
@@ -1132,8 +1172,7 @@ def stream_availability(
     path:
         Source file path used for reporting.
     cadence_path:
-        Optional path or filename used for cadence inference. For converted TXT
-        files this should be the converter's suggested IAGA filename.
+        Optional path or filename used for cadence inference.
 
     Returns
     -------
@@ -1206,14 +1245,55 @@ def stream_availability(
     )
 
 
+@enforce_types(candidate=DayAvailability, current=DayAvailability)
+def is_better_availability(
+    candidate: DayAvailability,
+    current: DayAvailability,
+) -> bool:
+    """
+    Return whether a candidate file is a better daily availability source.
+
+    Alerting depends on the freshest valid measurement. Coverage is only a
+    tie-breaker between files with the same latest timestamp.
+    """
+
+    if not candidate.has_data:
+        return False
+
+    if not current.has_data:
+        return True
+
+    if candidate.latest is not None and current.latest is None:
+        return True
+
+    if candidate.latest is None:
+        return False
+
+    if current.latest is not None:
+        if candidate.latest > current.latest:
+            return True
+        if candidate.latest < current.latest:
+            return False
+
+    candidate_coverage = candidate.coverage_percent
+    current_coverage = current.coverage_percent
+    if candidate_coverage is not None and current_coverage is None:
+        return True
+    if candidate_coverage is None:
+        return candidate.valid_samples > current.valid_samples
+
+    return candidate_coverage > current_coverage
+
+
 @enforce_types(site_code=str, day=datetime, data_root=(str, Path))
 def day_data_availability(site_code: str, day: datetime, data_root: Path) -> DayAvailability:
     """
     Return valid data availability for one site on one UTC day.
 
     The monitor may have multiple candidate files for a site/day, for example
-    live TXT data plus converted IAGA files. This function evaluates every
-    existing candidate file and returns the best available coverage summary.
+    second and minute IAGA products. This function evaluates every existing
+    candidate file and returns the freshest valid measurement summary, using
+    coverage as a tie-breaker when timestamps match.
 
     Parameters
     ----------
@@ -1227,14 +1307,14 @@ def day_data_availability(site_code: str, day: datetime, data_root: Path) -> Day
     Returns
     -------
     DayAvailability
-        Best coverage summary found for the day, or an empty summary when no
+        Freshest valid summary found for the day, or an empty summary when no
         valid data are present.
     """
 
     data_root = Path(data_root)
     best = DayAvailability(False, None, 0, None, None, None, None)
 
-    for path in candidate_files_for_day(data_root, site_code, day, today=day):
+    for path in candidate_files_for_day(data_root, site_code, day):
         if not path.exists():
             continue
 
@@ -1251,15 +1331,7 @@ def day_data_availability(site_code: str, day: datetime, data_root: Path) -> Day
         if not availability.has_data:
             continue
 
-        if availability.coverage_percent is None:
-            if not best.has_data or availability.valid_samples > best.valid_samples:
-                best = availability
-            continue
-
-        if (
-            best.coverage_percent is None
-            or availability.coverage_percent > best.coverage_percent
-        ):
+        if is_better_availability(availability, best):
             best = availability
 
     return best
@@ -1282,7 +1354,7 @@ def availability_job(site_code: str, data_root: Path, day: datetime) -> tuple[st
     """
     Run one site/day availability check for parallel execution.
     """
-
+    day = utc_archive_day(day)
     return day.strftime("%Y-%m-%d"), day_data_availability(site_code, day, data_root)
 
 
@@ -1341,7 +1413,8 @@ def build_availability_lookup(
     data_root:
         One shared archive root, or a mapping from site code to archive root.
     start_date, end_date:
-        Inclusive UTC date range to calculate.
+        Inclusive date/time range to calculate. Values are normalised to UTC
+        archive days before filenames are built.
     output_path:
         JSON file to write.
     parallel_jobs:
@@ -1356,6 +1429,8 @@ def build_availability_lookup(
     from joblib import Parallel, delayed
 
     output_path = Path(output_path)
+    start_date = utc_archive_day(start_date)
+    end_date = utc_archive_day(end_date)
 
     if update_existing and output_path.exists():
         lookup = json.loads(output_path.read_text(encoding="utf-8"))
@@ -1432,6 +1507,16 @@ def build_availability_lookup(
                 date_key,
                 DayAvailability(False, None, 0, None, None, None, None),
             )
+            previous_had_data = bool(available_dates.get(date_key))
+            previous_latest = parse_lookup_datetime(
+                latest_valid_measurement_by_date.get(date_key)
+            )
+            if update_existing and previous_had_data:
+                if availability.latest is None:
+                    continue
+                if previous_latest is not None and availability.latest < previous_latest:
+                    continue
+
             data_frequency = availability.data_frequency or site.assumed_data_frequency
             expected_samples = (
                 availability.expected_samples

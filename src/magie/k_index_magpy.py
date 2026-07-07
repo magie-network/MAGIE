@@ -32,8 +32,27 @@ from magie.file_conversions import (
 from magie.utils import enforce_types, get_asset_path, get_site_metadata, tqdm_joblib
 
 
+def _as_utc_naive_timestamp(value):
+    """
+    Convert timezone-aware timestamps to UTC while preserving naive UTC inputs.
+    """
+
+    timestamp = pd.Timestamp(value)
+    if timestamp.tzinfo is None:
+        return timestamp
+    return timestamp.tz_convert("UTC").tz_localize(None)
+
+
+def _utc_day(value):
+    """
+    Return the UTC archive day for a datetime-like value.
+    """
+
+    return _as_utc_naive_timestamp(value).floor("1D")
+
+
 def _date_tokens(date):
-    return pd.Timestamp(date).strftime("%Y-%m-%d").split("-")
+    return _utc_day(date).strftime("%Y-%m-%d").split("-")
 
 
 def _path_prefix_join(path_prefix, *parts):
@@ -418,8 +437,9 @@ def live_k(now_time, site_code, path_prefix='https://data.magie.ie/', site_metad
     --------
     >>> live_k(pd.Timestamp('2024-01-03'), 'dun')
     """
-    start_time = pd.Timestamp(now_time).floor('1D')-pd.Timedelta(4, 'D')
-    end_time = pd.Timestamp(now_time).floor('1D') + pd.Timedelta(1, 'D')
+    now_time = _as_utc_naive_timestamp(now_time)
+    start_time = now_time.floor('1D')-pd.Timedelta(4, 'D')
+    end_time = now_time.floor('1D') + pd.Timedelta(1, 'D')
     if path_prefix.startswith("http"):
         raise ValueError(
             "live_k now expects a local archive path_prefix when "
@@ -656,7 +676,7 @@ def _require_valid_k_window(data, site_code, time):
         If the datastream is missing timestamps, lacks three days of coverage,
         or has no valid magnetic data for the target day.
     """
-    day = pd.Timestamp(time).floor("1D")
+    day = _utc_day(time)
 
     times = _datastream_column_to_array(data, "time")
     if times is None:
@@ -740,9 +760,10 @@ def daily_K(
     ValueError
         If the datastream cannot produce valid K values for the requested day.
     """
-    day = pd.Timestamp(time).floor("1D")
-    start_time = pd.Timestamp(time).floor("1D") - pd.Timedelta(2, "D")
-    end_time = pd.Timestamp(time).ceil("1D") + pd.Timedelta(3, "D")
+    timestamp = _as_utc_naive_timestamp(time)
+    day = timestamp.floor("1D")
+    start_time = timestamp.floor("1D") - pd.Timedelta(2, "D")
+    end_time = timestamp.ceil("1D") + pd.Timedelta(3, "D")
     counter = 0
 
     data = DataStream()
@@ -766,7 +787,7 @@ def daily_K(
     elif counter < 3:
         raise FileNotFoundError(
             f"Datastream is too short; need three full days for site '{site_code}' "
-            f"on {pd.Timestamp(time).floor('1D').date()}."
+            f"on {day.date()}."
         )
 
     data = data.filter()
@@ -815,7 +836,7 @@ def daily_K(
 )
 def _build_daily_k_error_record(exc, site_code, date):
     """Build a structured error record including the traceback origin."""
-    date = pd.Timestamp(date).floor("1D")
+    date = _utc_day(date)
     frames = traceback.extract_tb(exc.__traceback__)
     origin = frames[-1] if frames else None
 
@@ -884,7 +905,7 @@ def _run_daily_k_for_date(
         archive_path_builder=archive_path_builder,
         site_metadata=site_metadata,
     )
-    date = pd.Timestamp(date).floor("1D")
+    date = _utc_day(date)
     date_tokens = date.strftime("%Y-%m-%d").split("-")
     output_dir = Path(output_path_builder(date_tokens))
     output_dir.mkdir(parents=True, exist_ok=True)
@@ -908,7 +929,7 @@ def _run_daily_k_for_date_with_error_capture(
     site_metadata,
 ):
     """Run daily K generation for one day and return either an output path or a structured error."""
-    date = pd.Timestamp(date).floor("1D")
+    date = _utc_day(date)
     try:
         output_file = _run_daily_k_for_date(
             date=date,
@@ -986,8 +1007,8 @@ def daily_K_full_archive(
     ValueError
         If ``end`` is not later than ``start``.
     """
-    start = pd.Timestamp(start).floor("1D")
-    end = pd.Timestamp(end).floor("1D")
+    start = _utc_day(start)
+    end = _utc_day(end)
     if end <= start:
         raise ValueError("'end' must be later than 'start'.")
 
@@ -1106,8 +1127,8 @@ def daily_K_plots_full_archive(
     ValueError
         If ``end`` is not later than ``start``.
     """
-    start = pd.Timestamp(start).floor("1D")
-    end = pd.Timestamp(end).floor("1D")
+    start = _utc_day(start)
+    end = _utc_day(end)
     if end <= start:
         raise ValueError("'end' must be later than 'start'.")
 
