@@ -329,7 +329,7 @@ def build_empty_iaga_window(
     path_prefix=str,
     file_format=str,
 )
-def _get_live(date, site_code, path_prefix='https://data.magie.ie/', file_format="iaga2002"):
+def _get_live(date, site_code, path_prefix='https://data.magie.ie/', file_format="iaga2002", **kwargs):
     """
     Load one day's live data for a site.
 
@@ -382,10 +382,13 @@ def _get_live(date, site_code, path_prefix='https://data.magie.ie/', file_format
                             skiprows=1, parse_dates=['Date_UTC'], dayfirst=True, index_col=False).replace(99.99999e3, np.nan)
         df['Site'] = [site_code] * len(df)
         df = df[drop_index]
-        df = pd.concat([pd.DataFrame(columns=df.columns,
-                                    data=[[pd.Timestamp(df.Date_UTC.min().to_numpy().astype('datetime64[D]').astype('datetime64[ns]')),
-                                            site_code] + [np.nan] * (len(df.columns) - 2)]), df])
-        df= magie2iaga2002(df, site_code)
+        day_start = pd.Timestamp(
+            df.Date_UTC.min().to_numpy().astype('datetime64[D]').astype('datetime64[ns]')
+        )
+        if df.Date_UTC.min() > day_start:
+            df = pd.concat([pd.DataFrame(columns=df.columns,
+                                        data=[[day_start, site_code] + [np.nan] * (len(df.columns) - 2)]), df])
+        df= magie2iaga2002(df, site_code, **kwargs)
     else:
         date = _date_tokens(date)
         folder = _path_prefix_join(path_prefix, *date, "txt") + "/"
@@ -399,10 +402,13 @@ def _get_live(date, site_code, path_prefix='https://data.magie.ie/', file_format
         df['Date_UTC'] = pd.to_datetime(df['Date_UTC'], format='mixed')
         df['Site'] = [site_code] * len(df)
         df = df[drop_index]
-        df = pd.concat([pd.DataFrame(columns=df.columns,
-                                     data=[[pd.Timestamp(df.Date_UTC.min().to_numpy().astype('datetime64[D]').astype('datetime64[ns]')),
-                                            site_code] + [np.nan] * (len(df.columns) - 2)]), df])
-        df= magie2iaga2002(df, site_code)
+        day_start = pd.Timestamp(
+            df.Date_UTC.min().to_numpy().astype('datetime64[D]').astype('datetime64[ns]')
+        )
+        if df.Date_UTC.min() > day_start:
+            df = pd.concat([pd.DataFrame(columns=df.columns,
+                                         data=[[day_start, site_code] + [np.nan] * (len(df.columns) - 2)]), df])
+        df= magie2iaga2002(df, site_code, **kwargs)
     return df
 
 @enforce_types(
