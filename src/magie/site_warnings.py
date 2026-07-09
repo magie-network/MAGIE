@@ -27,23 +27,24 @@ value at a timestamp. A timestamp with only NaNs is treated as missing data.
 from __future__ import annotations
 
 import json
-from collections.abc import Mapping
+import warnings
 from dataclasses import dataclass
-from datetime import datetime, timedelta, timezone
+from datetime import datetime
 from html import escape
 from pathlib import Path
 from string import Template
 
+import pandas as pd
+import os
 import numpy as np
-from magpy.stream import DataStream, read
+from magpy.stream import read
 
 from magie.email_utils import (
     load_email_config,
     load_recipients,
-    render_html_template,
     send_html_email,
 )
-from magie.utils import enforce_types, get_site_metadata, tqdm_joblib
+from magie.utils import enforce_types, get_site_metadata
 
 @dataclass
 class SiteConfig:
@@ -74,6 +75,7 @@ class SiteConfig:
 
     code: str
     name: str = ""
+    null_data_value: float = 999999.00
     data_root: Path | None = None
     assumed_data_frequency: str | None = None
     active: bool = True
@@ -101,226 +103,9 @@ class SiteConfig:
                 self.assumed_data_frequency = "min"
 
 
-@dataclass
-class MonitorConfig:
-    """
-    Runtime configuration for the monitor.
-
-    Parameters
-    ----------
-    data_root:
-        Root directory containing ``YYYY/MM/DD`` data folders, or a mapping
-        from normalised site code to root directory. This allows mixed archive
-        roots, for example ``{"dun": Path("/archive"), "flo": Path("/flo")}``.
-    monitor_status_path:
-        Monitor-owned JSON file used to remember last measurements and whether
-        each site was already offline. If it does not exist, it is created on
-        the first monitor run. This prevents repeated emails every time the
-        monitor runs.
-    email_config_path:
-        TOML file consumed by ``load_email_config``.
-    recipients_path:
-        Text file with one recipient email address per line.
-    outage_email_template:
-        HTML template for outage warnings.
-    restored_email_template:
-        HTML template for restored notifications.
-    max_inactivity:
-        Maximum allowed time since the last valid measurement.
-    availability_lookup_path:
-        JSON availability lookup written by ``build_availability_lookup``.
-        When present, the monitor uses this for last-seen checks instead of
-        rereading archive files for every site.
-    availability_lookup_max_age:
-        Optional maximum age of the lookup file's ``generated_at`` timestamp
-        before the monitor ignores it and falls back to direct archive reads.
-        ``None`` trusts the lookup regardless of age.
-    reset_monitor_status:
-        When ``True``, ignore any existing monitor status JSON and write a fresh
-        one at the end of the run. Defaults to ``False`` so alert deduplication
-        persists across normal monitor runs.
-    force_restored_email:
-        When ``True``, send a restored email for each site that currently has
-        valid data, even if the previous monitor status did not mark it
-        offline. Intended only for template/email testing.
-    """
-
-    data_root: Path | str | Mapping[str, Path | str]
-    monitor_status_path: Path
-    email_config_path: Path
-    recipients_path: Path
-    outage_email_template: Path
-    restored_email_template: Path
-    max_inactivity: timedelta
-    availability_lookup_path: Path
-    availability_lookup_max_age: timedelta | None = None
-    reset_monitor_status: bool = False
-    force_restored_email: bool = False
 
 
-@dataclass
-class SiteStatusEvent:
-    """
-    Status transition for one monitored site during a monitor run.
-    """
 
-    site_code: str
-    site_name: str
-    last_seen_at: str
-    time_since_last: str
-
-
-@dataclass
-class DayAvailability:
-    """
-    Availability summary for one site on one UTC day.
-    """
-
-    has_data: bool
-    latest: datetime | None
-    valid_samples: int
-    expected_samples: int | None
-    coverage_percent: float | None
-    data_frequency: str | None
-    source_file: str | None
-
-
-@dataclass
-class MagnetometerReadResult:
-    """
-    Loaded magnetometer file and metadata derived while reading it.
-
-    Attributes
-    ----------
-    stream:
-        MagPy data stream loaded from the source file.
-    source_path:
-        Original file path that was read.
-    cadence_path:
-        Path used to infer cadence from the IAGA filename, for example
-        ``psec`` or ``pmin``.
-    """
-
-    stream: DataStream
-    source_path: Path
-    cadence_path: Path
-
-
-class SiteCheckError(RuntimeError):
-    """Raised when a site alert check cannot determine a last-valid timestamp."""
-
-
-@enforce_types(path=(str, Path))
-def load_monitor_status(path: Path) -> dict:
-    """
-    Load monitor status from disk, creating an empty structure when missing.
-
-    The status records each site's last measurement and whether it was offline
-    during the previous check.
-    The ``offline`` flag is reserved for detected outages. Sites that are
-    intentionally disabled are recorded with ``status`` values such as
-    ``"inactive"`` or ``"permanently_off"`` instead.
-    """
-
-    path = Path(path)
-
-    if not path.exists():
-        return {"generated_at": None, "stations": {}}
-
-    status = json.loads(path.read_text(encoding="utf-8"))
-    if not isinstance(status, dict):
-        return {"generated_at": None, "stations": {}}
-
-    if isinstance(status.get("stations"), dict):
-        status.setdefault("generated_at", None)
-        return status
-
-    # Backwards compatibility for the previous flat state shape keyed by site.
-    stations = {
-        site_code: site_state
-        for site_code, site_state in status.items()
-        if isinstance(site_state, dict)
-    }
-    for site_state in stations.values():
-        if "last_measurement" not in site_state and "last_seen_at" in site_state:
-            site_state["last_measurement"] = site_state.get("last_seen_at")
-    return {"generated_at": status.get("generated_at"), "stations": stations}
-
-
-@enforce_types(path=(str, Path), status=dict, generated_at=datetime)
-def save_monitor_status(path: Path, status: dict, generated_at: datetime) -> None:
-    """
-    Save monitor status to disk as pretty-printed JSON.
-    """
-
-    path = Path(path)
-    path.parent.mkdir(parents=True, exist_ok=True)
-    status["generated_at"] = generated_at.isoformat()
-    status.setdefault("stations", {})
-    path.write_text(
-        json.dumps(status, indent=2, sort_keys=True),
-        encoding="utf-8",
-    )
-
-
-@enforce_types(value=datetime)
-def format_ut_datetime(value: datetime) -> str:
-    """
-    Format a datetime as a timezone-free UT timestamp for email text.
-    """
-
-    return as_utc_datetime(value).strftime("%Y-%m-%d %H:%M:%S")
-
-
-@enforce_types(value=datetime)
-def as_utc_datetime(value: datetime) -> datetime:
-    """
-    Return a timezone-aware UTC datetime.
-
-    Naive datetimes are interpreted as the host's local timezone before
-    conversion. This prevents local Irish time from being used directly as a
-    UTC IAGA archive date during summer time.
-    """
-
-    if value.tzinfo is None:
-        return value.astimezone(timezone.utc)
-
-    return value.astimezone(timezone.utc)
-
-
-@enforce_types(value=datetime)
-def utc_archive_day(value: datetime) -> datetime:
-    """
-    Return midnight UTC for the UTC archive day containing ``value``.
-    """
-
-    utc_value = as_utc_datetime(value)
-    return utc_value.replace(hour=0, minute=0, second=0, microsecond=0)
-
-
-@enforce_types(delta=timedelta)
-def format_duration(delta: timedelta) -> str:
-    """
-    Format a duration using years, days, hours, minutes, and seconds.
-    """
-
-    total_seconds = max(0, int(round(delta.total_seconds())))
-    units = [
-        ("year", 365 * 24 * 60 * 60),
-        ("day", 24 * 60 * 60),
-        ("hour", 60 * 60),
-        ("minute", 60),
-        ("second", 1),
-    ]
-    parts = []
-
-    for label, unit_seconds in units:
-        value, total_seconds = divmod(total_seconds, unit_seconds)
-        if value:
-            suffix = "" if value == 1 else "s"
-            parts.append(f"{value} {label}{suffix}")
-
-    return ", ".join(parts) if parts else "0 seconds"
 
 
 @enforce_types(value=int)
@@ -343,499 +128,258 @@ def number_word(value: int) -> str:
         10: "ten",
     }
     return words.get(value, str(value))
-
-
-@enforce_types(path=(str, Path, type(None)))
-def load_availability_lookup(path: Path | None) -> dict | None:
+@enforce_types(value=(datetime, pd.Timestamp, str))
+def format_ut_datetime(value: datetime) -> str:
     """
-    Load a build_availability_lookup JSON file if it is configured and present.
-
-    The monitor treats this file as an optimisation/cache. Missing, malformed,
-    or incomplete lookup data should not stop monitoring because the archive
-    scan path can still calculate last-seen times directly from data files.
+    Format a datetime as a timezone-free UT timestamp for email text.
     """
 
-    if path is None:
-        return None
+    return pd.Timestamp(value).round("s").strftime("%Y-%m-%d %H:%M:%S")
 
-    path = Path(path)
-    if not path.exists():
-        return None
-
-    try:
-        lookup = json.loads(path.read_text(encoding="utf-8"))
-    except (OSError, json.JSONDecodeError):
-        return None
-
-    if not isinstance(lookup, dict):
-        return None
-
-    stations = lookup.get("stations")
-    if not isinstance(stations, dict):
-        return None
-
-    return lookup
-
-
-@enforce_types(value=(str, type(None)))
-def parse_lookup_datetime(value: str | None) -> datetime | None:
+def format_event_datetime(value) -> str:
     """
-    Parse an ISO datetime from the availability lookup as UTC.
+    Format event timestamps for email tables at whole-second precision.
     """
 
-    if not value:
-        return None
+    timestamp = pd.Timestamp(value)
+    if timestamp is pd.NaT:
+        return str(pd.NaT)
+    return timestamp.round("s").strftime("%Y-%m-%d %H:%M:%S")
 
-    try:
-        parsed = datetime.fromisoformat(value)
-    except ValueError:
-        return None
-
-    if parsed.tzinfo is None:
-        return parsed.replace(tzinfo=timezone.utc)
-
-    return parsed.astimezone(timezone.utc)
-
-
-@enforce_types(site_code=str, availability_lookup=(dict, type(None)))
-def latest_available_day_from_lookup(
-    site_code: str,
-    availability_lookup: dict | None,
-) -> datetime | None:
+def format_event_duration(value) -> str:
     """
-    Return the latest UTC day marked available for a site in the lookup.
+    Format event durations for email tables at whole-second precision.
     """
 
-    if availability_lookup is None:
-        return None
+    duration = pd.Timedelta(value)
+    if duration is pd.NaT:
+        return str(pd.NaT)
+    return str(duration.round("s"))
 
-    station = availability_lookup.get("stations", {}).get(site_code)
-    if not isinstance(station, dict):
-        return None
-
-    available_dates = station.get("available_dates", {})
-    if not isinstance(available_dates, dict):
-        return None
-
-    true_dates = sorted(
-        date_key
-        for date_key, has_data in available_dates.items()
-        if has_data is True
-    )
-    if not true_dates:
-        return None
-
-    try:
-        latest = datetime.fromisoformat(true_dates[-1])
-    except ValueError:
-        return None
-
-    if latest.tzinfo is None:
-        return latest.replace(tzinfo=timezone.utc)
-
-    return latest.astimezone(timezone.utc)
-
-
-@enforce_types(
-    site_code=str,
-    availability_lookup=(dict, type(None)),
-    latest_allowed=(datetime, type(None)),
-)
-def last_valid_measurement_from_lookup(
-    site_code: str,
-    availability_lookup: dict | None,
-    latest_allowed: datetime | None = None,
-) -> datetime | None:
+def utc_timestamp(value=None):
     """
-    Return the last valid measurement timestamp stored in the availability lookup.
+    Return ``value`` as a timezone-aware UTC pandas timestamp.
 
-    This is a fallback for alert checks when the latest daily IAGA file cannot
-    be read. If the lookup does not contain a parseable timestamp, the monitor
-    should treat the check as inconclusive rather than alerting with an unknown
-    last-seen time. When ``latest_allowed`` is provided, timestamps after that
-    instant are ignored so future-dated data cannot produce false restores.
+    ``None`` means the current UTC time. Naive inputs are interpreted as UTC so
+    the archive day logic is stable across Irish summer/winter local time.
     """
 
-    if availability_lookup is None:
-        return None
+    timestamp = pd.Timestamp.now(tz='UTC') if value is None else pd.Timestamp(value)
+    if timestamp is pd.NaT:
+        return timestamp
+    if timestamp.tzinfo is None:
+        return timestamp.tz_localize('UTC')
+    return timestamp.tz_convert('UTC')
 
-    station = availability_lookup.get("stations", {}).get(site_code)
-    if not isinstance(station, dict):
-        return None
-
-    last_valid = parse_lookup_datetime(station.get("last_valid_measurement"))
-    if (
-        last_valid is not None
-        and (latest_allowed is None or last_valid <= latest_allowed)
-    ):
-        return last_valid
-
-    dated_measurements = station.get("latest_valid_measurement_by_date", {})
-    if not isinstance(dated_measurements, dict):
-        return None
-
-    for date_key in sorted(dated_measurements, reverse=True):
-        last_valid = parse_lookup_datetime(dated_measurements.get(date_key))
-        if (
-            last_valid is not None
-            and (latest_allowed is None or last_valid <= latest_allowed)
-        ):
-            return last_valid
-
-    return None
-
-
-@enforce_types(
-    availability_lookup=(dict, type(None)),
-    now=datetime,
-    max_age=(timedelta, type(None)),
-)
-def availability_lookup_is_fresh(
-    availability_lookup: dict | None,
-    now: datetime,
-    max_age: timedelta | None,
-) -> bool:
+def clamp_future_timestamp(timestamp, latest_allowed=None, source="measurement"):
     """
-    Return whether a loaded availability lookup is recent enough to trust.
+    Clamp future measurement timestamps to the monitor's current time.
+
+    Future timestamps can appear when a generated availability lookup or IAGA
+    file contains values beyond the monitor run time. The monitor must never
+    save a future ``last_measurement`` because that creates negative outage
+    durations. A warning is emitted when the future offset is large enough to
+    suggest an upstream bug.
     """
 
-    if availability_lookup is None:
-        return False
+    timestamp = utc_timestamp(timestamp)
+    if latest_allowed is None or timestamp is pd.NaT:
+        return timestamp
 
-    if max_age is None:
-        return True
+    latest_allowed = utc_timestamp(latest_allowed)
+    if latest_allowed is pd.NaT or timestamp <= latest_allowed:
+        return timestamp
 
-    generated_at = parse_lookup_datetime(availability_lookup.get("generated_at"))
-    if generated_at is None:
-        return False
-
-    return now - generated_at <= max_age
-
-
-@enforce_types(site=SiteConfig, default_data_root=(str, Path, Mapping))
-def data_root_for_site(
-    site: SiteConfig,
-    default_data_root: Path | str | Mapping[str, Path | str],
-) -> Path:
-    """
-    Return the archive root to use for one site.
-
-    Per-site ``SiteConfig.data_root`` takes precedence. Otherwise,
-    ``default_data_root`` may be either one shared root path or a mapping keyed
-    by normalised site code. Mapping values may be strings or ``Path`` objects.
-    """
-
-    if site.data_root is not None:
-        return Path(site.data_root)
-
-    if isinstance(default_data_root, Mapping):
-        try:
-            return Path(default_data_root[site.code])
-        except KeyError as exc:
-            raise KeyError(
-                f"No data root configured for site {site.code!r}"
-            ) from exc
-
-    return Path(default_data_root)
-
-
-@enforce_types(
-    data_root=(str, Path),
-    site_code=str,
-    day=datetime,
-)
-def candidate_files_for_day(
-    data_root: Path,
-    site_code: str,
-    day: datetime,
-) -> list[Path]:
-    """
-    Return possible IAGA files for one site on one day, in preferred read order.
-
-    Parameters
-    ----------
-    data_root:
-        Root data directory.
-    site_code:
-        Magnetometer site code.
-    day:
-        Date to search.
-    Returns
-    -------
-    list[pathlib.Path]
-        Candidate file paths. These may or may not exist.
-    """
-
-    data_root = Path(data_root)
-    day = utc_archive_day(day)
-
-    yyyy = day.strftime("%Y")
-    mm = day.strftime("%m")
-    dd = day.strftime("%d")
-    ymd = day.strftime("%Y%m%d")
-
-    day_dir = data_root / yyyy / mm / dd
-
-    iaga_dir = day_dir / "iaga2002"
-    iaga_files = [
-        iaga_dir / f"{site_code}{ymd}psec.sec",
-        iaga_dir / f"{site_code}{ymd}pmin.min",
-    ]
-    iaga_files.extend(sorted(iaga_dir.glob(f"{site_code}{ymd}*sec.sec")))
-    iaga_files.extend(sorted(iaga_dir.glob(f"{site_code}{ymd}*min.min")))
-    return list(dict.fromkeys(iaga_files))
-
-
-@enforce_types(path=(str, Path))
-def read_magnetometer_file_with_metadata(path: Path) -> MagnetometerReadResult:
-    """
-    Read a magnetometer file and return the stream plus cadence metadata.
-
-    IAGA ``.sec`` and ``.min`` files are read directly with
-    ``magpy.stream.read``. Other file types are not supported.
-
-    Parameters
-    ----------
-    path:
-        Path to the data file.
-
-    Returns
-    -------
-    MagnetometerReadResult
-        Loaded stream, original source path, and cadence-informative path.
-
-    Raises
-    ------
-    ValueError
-        If the file type is unsupported.
-    """
-
-    path = Path(path)
-    suffix = path.suffix.lower()
-
-    if suffix in {".sec", ".min"}:
-        return MagnetometerReadResult(
-            stream=read(str(path)),
-            source_path=path,
-            cadence_path=path,
+    future_offset = timestamp - latest_allowed
+    if future_offset > pd.Timedelta(minutes=10):
+        warnings.warn(
+            (
+                f"{source} timestamp {timestamp.isoformat()} is "
+                f"{future_offset} after monitor time {latest_allowed.isoformat()}; "
+                "clamping to monitor time."
+            ),
+            RuntimeWarning,
+            stacklevel=2,
         )
+    return latest_allowed
 
-    raise ValueError(f"Unsupported magnetometer file type: {path}")
-
-
-@enforce_types(path=(str, Path))
-def read_magnetometer_file(path: Path) -> DataStream:
+@enforce_types(site_config=SiteConfig)
+def get_files(date, site_config):
     """
-    Read an IAGA file as a MagPy DataStream.
-
-    This compatibility wrapper returns only the stream. Use
-    ``read_magnetometer_file_with_metadata`` when the caller also needs cadence
-    metadata.
+    Return candidate IAGA files for one site on one UTC archive day.
     """
 
-    return read_magnetometer_file_with_metadata(path).stream
+    iaga_dir = site_config.data_root / date.strftime("%Y/%m/%d") / "iaga2002"
+    return sorted(iaga_dir.glob(f"{site_config.code}{date:%Y%m%d}*"))
 
-@enforce_types(stream=DataStream, latest_allowed=(datetime, type(None)))
-def latest_valid_time(
-    stream: DataStream,
-    latest_allowed: datetime | None = None,
-) -> datetime | None:
+@enforce_types(path=(str, Path), null_data_value=(int, float))
+def latest_valid_time_from_file(path, null_data_value, latest_allowed=None):
     """
-    Find the latest timestamp where x, y, or z contains real data.
+    Read an IAGA file with MagPy and return the latest valid x/y/z timestamp.
 
-    MagPy streams may contain a full time grid even when data are missing.
-    Therefore the latest timestamp alone is not enough. We only accept a
-    timestamp if at least one of ``x``, ``y`` or ``z`` is finite. When
-    ``latest_allowed`` is provided, valid samples after that instant are
-    ignored.
-
-    Parameters
-    ----------
-    stream:
-        MagPy DataStream object supporting dictionary-style access, e.g.
-        ``stream["time"]``, ``stream["x"]``, ``stream["y"]``, ``stream["z"]``.
-
-    Returns
-    -------
-    datetime.datetime or None
-        Latest valid measurement time, or ``None`` if no valid x/y/z value is
-        found.
+    MagPy's ``read`` currently needs a string path for these files; passing a
+    ``Path`` object can return an empty stream. A timestamp is valid when at
+    least one of x, y, or z is finite and not the configured null value.
     """
 
-    try:
-        times = np.asarray(stream["time"], dtype=object)
-        x = np.asarray(stream["x"], dtype=float)
-        y = np.asarray(stream["y"], dtype=float)
-        z = np.asarray(stream["z"], dtype=float)
-    except Exception:
-        return None
-
+    # MagPy can return an empty stream for Path objects here; use a string path.
+    file = read(str(path))
+    times = np.asarray(file['time'], dtype=object)
     if len(times) == 0:
-        return None
-
-    if latest_allowed is not None:
-        latest_allowed = as_utc_datetime(latest_allowed)
-
-    valid_values = np.isfinite(x) | np.isfinite(y) | np.isfinite(z)
-    latest = None
-
-    for last_time in times[valid_values]:
-        if not isinstance(last_time, datetime):
-            continue
-        if last_time.tzinfo is None:
-            candidate = last_time.replace(tzinfo=timezone.utc)
-        else:
-            candidate = last_time.astimezone(timezone.utc)
-        if latest_allowed is not None and candidate > latest_allowed:
-            continue
-        if latest is None or candidate > latest:
-            latest = candidate
-
-    return latest
-
-
-@enforce_types(
-    site_code=str,
-    day=datetime,
-    data_root=(str, Path),
-    latest_allowed=(datetime, type(None)),
-)
-def get_last_measurement_for_day(
-    site_code: str,
-    day: datetime,
-    data_root: Path,
-    latest_allowed: datetime | None = None,
-) -> datetime | None:
-    """
-    Find the latest valid measurement for a site on one UTC day.
-
-    This is used with the availability lookup: the lookup says which days have
-    data, and this function reads that day's IAGA files to get the actual latest
-    timestamp.
-    """
-
-    latest: datetime | None = None
-
-    for path in candidate_files_for_day(data_root, site_code, day):
-        if not path.exists():
-            continue
-
-        try:
-            stream = read(str(path))
-            last_seen = latest_valid_time(stream, latest_allowed=latest_allowed)
-        except Exception:
-            continue
-
-        if last_seen is None:
-            continue
-
-        if latest is None or last_seen > latest:
-            latest = last_seen
-
-    return latest
-
-
-@enforce_types(
-    subject=str,
-    template_path=(str, Path),
-    cfg=MonitorConfig,
-    values=dict,
-)
-def send_status_email(
-    subject: str,
-    template_path: Path,
-    cfg: MonitorConfig,
-    values: dict[str, str | int | float],
-) -> None:
-    """
-    Render and send one HTML status email.
-
-    This uses your existing email utilities:
-        - load_email_config
-        - load_recipients
-        - render_html_template
-        - send_html_email
-    """
-
-    template_path = Path(template_path)
-    email_cfg = load_email_config(cfg.email_config_path)
-    recipients = load_recipients(cfg.recipients_path)
-
-    html = render_html_template(str(template_path), values)
-
-    send_html_email(
-        smtp_host=email_cfg["smtp_host"],
-        smtp_port=email_cfg["smtp_port"],
-        username=email_cfg["username"],
-        password=email_cfg["password"],
-        from_addr=email_cfg["from_addr"],
-        to_addrs=recipients,
-        subject=subject,
-        html_content=html,
-        use_starttls=email_cfg["use_starttls"],
+        raise RuntimeError(f"MagPy read returned no timestamps for {path}")
+    valid = np.zeros(len(times), dtype=bool)
+    for component in ('x', 'y', 'z'):
+        values = np.asarray(file[component], dtype=float)
+        valid |= np.isfinite(values) & (values != null_data_value)
+    if not np.any(valid):
+        raise RuntimeError(f"MagPy read returned no valid x/y/z data for {path}")
+    latest_time = pd.Timestamp(times[valid].max())
+    return clamp_future_timestamp(
+        latest_time,
+        latest_allowed,
+        source=f"MagPy file {path}",
     )
 
+@enforce_types(site=SiteConfig, mag_availability=dict)
+def latest_measurement_from_availability(site, mag_availability, latest_allowed=None):
+    """
+    Return the newest availability timestamp for a site, clamped to run time.
+    """
 
+    measurements = (
+        mag_availability
+        .get('stations', {})
+        .get(site.code, {})
+        .get('latest_valid_measurement_by_date', {})
+    )
+    if latest_allowed is not None:
+        latest_allowed = utc_timestamp(latest_allowed)
+    for key in list(measurements.keys())[::-1]:
+        if measurements[key] is None or not measurements[key]:
+            continue
+        measurement_time = clamp_future_timestamp(
+            measurements[key],
+            latest_allowed,
+            source=f"availability lookup {site.code} {key}",
+        )
+        return measurement_time.isoformat()
+    return str(pd.NaT)
+
+@enforce_types(site=SiteConfig, mag_availability=(dict, type(None)))
+def default_station_status(site, mag_availability=None, latest_allowed=None):
+    """
+    Build the default status entry for a site.
+    """
+
+    latest = (
+        latest_measurement_from_availability(site, mag_availability, latest_allowed)
+        if mag_availability is not None
+        else str(pd.NaT)
+    )
+    return {
+        'status': 'permanently_off' if site.permanently_off else 'offline',
+        'last_measurement': latest,
+        'time_since_last': str(pd.NaT),
+        'status_change': False,
+    }
+
+@enforce_types(site_configs=list, mag_availability=dict)
+def create_monitor_status(site_configs, mag_availability, latest_allowed=None):
+    """
+    Create a fresh monitor status JSON structure for configured sites.
+    """
+
+    status= {'generated_at': pd.NaT, 'stations': {}}
+    for site in site_configs:
+        status['stations'][site.code] = default_station_status(
+            site,
+            mag_availability,
+            latest_allowed,
+        )
+    return status
+
+@enforce_types(site_configs=list, monitor_status=dict, mag_availability=(dict, type(None)))
+def refresh_monitor_status_from_site_configs(site_configs, monitor_status, mag_availability=None, latest_allowed=None):
+    """
+    Synchronize an existing monitor status file with current site configs.
+
+    This adds newly configured stations, fills missing fields from older status
+    files, and keeps permanently-off site state aligned with ``SiteConfig``.
+    """
+
+    monitor_status.setdefault('stations', {})
+    for site in site_configs:
+        station_status = monitor_status['stations'].setdefault(
+            site.code,
+            default_station_status(site, mag_availability, latest_allowed),
+        )
+        station_status.setdefault('last_measurement', str(pd.NaT))
+        station_status.setdefault('time_since_last', str(pd.NaT))
+        station_status.setdefault('status_change', False)
+        station_status.setdefault('status', 'offline')
+        if site.permanently_off:
+            station_status['status'] = 'permanently_off'
+        elif station_status['status'] == 'permanently_off':
+            station_status['status'] = 'offline'
+    return monitor_status
 @enforce_types(events=list)
-def event_rows_html(events: list[SiteStatusEvent]) -> str:
+def event_rows_html(events: list) -> str:
     """
     Render escaped table rows for a batch of site status events.
     """
-
     rows = []
 
-    for event in events:
+    for site, event in events:
+        site_code = site.code if isinstance(site, SiteConfig) else str(site)
+        site_name = site.name if isinstance(site, SiteConfig) and site.name else site_code
         rows.append(
             "<tr>"
-            f"<td>{escape(event.site_name)} ({escape(event.site_code)})</td>"
-            f"<td>{escape(event.last_seen_at)}</td>"
-            f"<td>{escape(event.time_since_last)}</td>"
+            f"<td>{escape(site_name)} ({escape(site_code)})</td>"
+            f"<td>{escape(format_event_datetime(event['last_measurement']))}</td>"
+            f"<td>{escape(format_event_duration(event['time_since_last']))}</td>"
             "</tr>"
         )
 
     return "\n".join(rows)
-
-
 @enforce_types(
     subject=str,
     template_path=(str, Path),
-    cfg=MonitorConfig,
-    values=dict,
+    config=(str, Path),
+    recipients=(str, Path),
     events=list,
+    threshold_minutes=(int, type(None)),
 )
 def send_batched_status_email(
     subject: str,
     template_path: Path,
-    cfg: MonitorConfig,
-    values: dict[str, str | int | float],
-    events: list[SiteStatusEvent],
+    config: Path,
+    recipients: Path,
+    checked_at: datetime,
+    events: list,
+    threshold_minutes: int | None = None,
 ) -> None:
     """
     Render and send one status email containing all events in a monitor run.
     """
 
-    template_path = Path(template_path)
     site_rows = event_rows_html(events)
     values = {
-        **values,
         "site_count": number_word(len(events)),
         "site_label": "site" if len(events) == 1 else "sites",
         "site_verb": "is" if len(events) == 1 else "are",
+        "threshold_minutes": "" if threshold_minutes is None else threshold_minutes,
     }
 
-    email_cfg = load_email_config(cfg.email_config_path)
-    recipients = load_recipients(cfg.recipients_path)
+    email_cfg = load_email_config(config)
+    recipients = load_recipients(recipients)
 
-    template_text = template_path.read_text(encoding="utf-8")
-    if "checked_at" in values:
-        checked_at = parse_lookup_datetime(str(values["checked_at"]))
-        if checked_at is not None:
-            values["checked_at"] = format_ut_datetime(checked_at)
+    template_text = Path(template_path).read_text(encoding="utf-8")
 
     safe_values = {
         key: escape(str(value)) for key, value in values.items()
     }
     safe_values["site_rows"] = site_rows
+    safe_values["checked_at"] = format_ut_datetime(checked_at)
     html = Template(template_text).safe_substitute(safe_values)
 
     send_html_email(
@@ -851,726 +395,238 @@ def send_batched_status_email(
     )
 
 
-@enforce_types(
-    site=SiteConfig,
-    cfg=MonitorConfig,
-    state=dict,
-    now=datetime,
-    availability_lookup=(dict, type(None)),
-)
-def check_site(
-    site: SiteConfig,
-    cfg: MonitorConfig,
-    state: dict,
-    now: datetime,
-    availability_lookup: dict | None = None,
-) -> tuple[str, SiteStatusEvent] | None:
+class Mag_Monitor():
     """
-    Check one magnetometer site and return an outage/restored event if needed.
+    Stateful magnetometer activity monitor.
 
-    Email behaviour
-    ---------------
-    Was online, now offline:
-        Return an outage event.
+    The monitor keeps one JSON status file with each station's current state,
+    last valid measurement, and whether a status transition has happened since
+    the previous run. Emails are sent only for transitions so repeated cron runs
+    do not resend the same outage/restored notification.
 
-    Still offline:
-        Send nothing.
-
-    Was offline, now online:
-        Return a restored event.
-
-    Still online:
-        Send nothing.
-
-    The ``state`` dictionary is updated in-place. Emails are sent by
-    ``run_monitor`` after all sites have been checked, so multiple site events
-    from one run can be batched into one message.
+    Parameters
+    ----------
+    site_configs:
+        List of ``SiteConfig`` objects to monitor.
+    mag_availability_path:
+        Availability lookup JSON used to seed a new monitor status file.
+    monitor_status_path:
+        Persistent monitor-owned JSON status file.
+    alert_threshold:
+        Maximum allowed age of the latest valid measurement.
+    reset_monitor_status:
+        When true, ignore any existing status file and create a fresh one.
+    now:
+        Optional fixed monitor time for tests. Defaults to current UTC time.
     """
 
-    site_state = state.setdefault(
-        site.code,
-        {
-            "offline": False,
-            "status": "unknown",
-            "last_measurement": None,
-            "last_alert_sent_at": None,
-            "last_restored_sent_at": None,
-        },
+    @enforce_types(
+        site_configs=list,
+        mag_availability_path=(str, Path),
+        monitor_status_path=(str, Path),
+        alert_threshold=pd.Timedelta,
+        reset_monitor_status=bool,
+        email_config_path=(str, Path),
+        recipients_path=(str, Path),
+        restored_email_template=(str, Path, type(None)),
+        outage_email_template=(str, Path, type(None)),
     )
-
-    if site.permanently_off:
-        site_state["offline"] = False
-        site_state["status"] = "permanently_off"
-        return None
-
-    if not site.active:
-        site_state["offline"] = False
-        site_state["status"] = "inactive"
-        return None
-
-    site_data_root = data_root_for_site(site, cfg.data_root)
-    latest_available_day = latest_available_day_from_lookup(
-        site.code,
-        availability_lookup,
-    )
-    last_seen = None
-
-    if latest_available_day is not None:
-        last_seen = get_last_measurement_for_day(
-            site_code=site.code,
-            day=latest_available_day,
-            data_root=site_data_root,
-            latest_allowed=now,
+    def __init__(self, site_configs, mag_availability_path=Path('magnetometer_availability.json'),
+                 monitor_status_path='magnetometer_monitor_status.json', alert_threshold=pd.Timedelta(hours=2),
+                 reset_monitor_status=False, email_config_path=Path('email_config.json'), recipients_path=Path('recipients.txt'),
+                 restored_email_template=None,
+                 outage_email_template=None,
+                 now=None):
+        self.site_configs = site_configs
+        self.now = utc_timestamp(now)
+        self.mag_availability_path = Path(mag_availability_path)
+        with open(self.mag_availability_path, 'r') as f:
+            self.mag_availability = json.loads(f.read())
+        template_dir = Path(__file__).parent / "assets" / "email_templates"
+        self.restored_email_template = (
+            Path(restored_email_template)
+            if restored_email_template is not None
+            else template_dir / "magnetometer_restored.html"
         )
-
-    if last_seen is None:
-        last_seen = last_valid_measurement_from_lookup(
-            site.code,
-            availability_lookup,
-            latest_allowed=now,
+        self.outage_email_template = (
+            Path(outage_email_template)
+            if outage_email_template is not None
+            else template_dir / "magnetometer_outage.html"
         )
-
-    if last_seen is None:
-        site_state["status"] = "check_failed"
-        raise SiteCheckError(
-            f"Could not determine last valid measurement for site {site.code!r}. "
-            "Suppressing alert email rather than sending an unknown last-seen time."
-        )
-
-    else:
-        age = now - last_seen
-        is_offline = age > cfg.max_inactivity
-        time_since_last = format_duration(age)
-        last_seen_text = format_ut_datetime(last_seen)
-        site_state["last_measurement"] = last_seen.isoformat()
-
-    was_offline = bool(site_state.get("offline", False))
-
-    if is_offline and not was_offline:
-        site_state["offline"] = True
-        site_state["status"] = "offline"
-        site_state["last_alert_sent_at"] = now.isoformat()
-        return (
-            "outage",
-            SiteStatusEvent(
-                site_code=site.code,
-                site_name=site.name,
-                last_seen_at=last_seen_text,
-                time_since_last=time_since_last,
-            ),
-        )
-
-    elif not is_offline and (was_offline or cfg.force_restored_email):
-        site_state["offline"] = False
-        site_state["status"] = "online"
-        site_state["last_restored_sent_at"] = now.isoformat()
-        return (
-            "restored",
-            SiteStatusEvent(
-                site_code=site.code,
-                site_name=site.name,
-                last_seen_at=last_seen_text,
-                time_since_last=time_since_last,
-            ),
-        )
-
-    else:
-        site_state["offline"] = is_offline
-        site_state["status"] = "offline" if is_offline else "online"
-        return None
-
-
-@enforce_types(sites=list, cfg=MonitorConfig)
-def run_monitor(sites: list[SiteConfig], cfg: MonitorConfig) -> None:
-    """
-    Run the monitor once for all configured sites.
-
-    This function is intended to be called periodically from cron or systemd,
-    for example every 5 or 10 minutes.
-
-    It loads the previous state, checks all sites, sends any required emails,
-    and writes the updated state back to disk.
-    """
-
-    now = datetime.now(timezone.utc)
-    if cfg.reset_monitor_status:
-        monitor_status = {"generated_at": None, "stations": {}}
-    else:
-        monitor_status = load_monitor_status(cfg.monitor_status_path)
-    state = monitor_status.setdefault("stations", {})
-    availability_lookup = load_availability_lookup(cfg.availability_lookup_path)
-    if not availability_lookup_is_fresh(
-        availability_lookup,
-        now,
-        cfg.availability_lookup_max_age,
-    ):
-        availability_lookup = None
-    outage_events: list[SiteStatusEvent] = []
-    restored_events: list[SiteStatusEvent] = []
-
-    for site in sites:
-        event = check_site(
-            site,
-            cfg,
-            state,
-            now,
-            availability_lookup,
-        )
-
-        if event is None:
-            continue
-
-        event_type, site_event = event
-
-        if event_type == "outage":
-            outage_events.append(site_event)
-        elif event_type == "restored":
-            restored_events.append(site_event)
-
-    if outage_events:
-        site_count = len(outage_events)
-        subject = (
-            f"Magnetometer warning: {outage_events[0].site_code} is not sending data"
-            if site_count == 1
-            else f"Magnetometer warning: {number_word(site_count)} sites are not sending data"
-        )
-        send_batched_status_email(
-            subject=subject,
-            template_path=cfg.outage_email_template,
-            cfg=cfg,
-            values={
-                "threshold_minutes": round(cfg.max_inactivity.total_seconds() / 60, 1),
-                "checked_at": format_ut_datetime(now),
-            },
-            events=outage_events,
-        )
-
-    if restored_events:
-        site_count = len(restored_events)
-        subject = (
-            f"Magnetometer restored: {restored_events[0].site_code} is sending data again"
-            if site_count == 1
-            else f"Magnetometer restored: {number_word(site_count)} sites are sending data again"
-        )
-        send_batched_status_email(
-            subject=subject,
-            template_path=cfg.restored_email_template,
-            cfg=cfg,
-            values={
-                "checked_at": format_ut_datetime(now),
-            },
-            events=restored_events,
-        )
-
-    save_monitor_status(cfg.monitor_status_path, monitor_status, now)
-
-@enforce_types(seconds=(int, float, np.number, type(None)))
-def frequency_from_seconds(seconds: float | None) -> tuple[str | None, int | None]:
-    """
-    Return a frequency label and expected daily sample count.
-
-    Parameters
-    ----------
-    seconds:
-        Estimated cadence between valid samples.
-
-    Returns
-    -------
-    tuple
-        ``("sec", 86400)`` for one-second cadence, ``("min", 1440)`` for
-        one-minute cadence, or a generic seconds label and expected count for
-        other cadences. ``(None, None)`` is returned when cadence is unknown.
-    """
-
-    if seconds is None:
-        return None, None
-
-    if seconds <= 1.5:
-        return "sec", 24 * 60 * 60
-
-    if seconds <= 90:
-        return "min", 24 * 60
-
-    return f"{seconds:g}s", round((24 * 60 * 60) / seconds)
-
-
-@enforce_types(path=(str, Path))
-def frequency_from_path(path: Path) -> tuple[str | None, int | None]:
-    """
-    Infer cadence from a known magnetometer filename when stream timing is sparse.
-
-    Parameters
-    ----------
-    path:
-        Candidate magnetometer file path.
-
-    Returns
-    -------
-    tuple
-        Frequency label and expected daily sample count inferred from ``psec``,
-        ``pmin``, ``.sec``, or ``.min`` naming.
-    """
-
-    path = Path(path)
-    name = path.name.lower()
-    suffix = path.suffix.lower()
-
-    if "psec" in name or suffix == ".sec":
-        return "sec", 24 * 60 * 60
-
-    if "pmin" in name or suffix == ".min":
-        return "min", 24 * 60
-
-    return None, None
-
-
-@enforce_types(frequency=(str, type(None)))
-def expected_samples_from_frequency(frequency: str | None) -> int | None:
-    """
-    Return expected daily sample count for a configured frequency label.
-
-    Parameters
-    ----------
-    frequency:
-        Frequency label such as ``"sec"``, ``"min"``, ``"1-second"`` or
-        ``"1-minute"``.
-
-    Returns
-    -------
-    int or None
-        Expected samples in a complete UTC day, or ``None`` when the label is
-        unknown.
-    """
-
-    if frequency is None:
-        return None
-
-    label = frequency.strip().lower()
-
-    if label in {"sec", "second", "seconds", "1-sec", "1-second"}:
-        return 24 * 60 * 60
-
-    if label in {"min", "minute", "minutes", "1-min", "1-minute"}:
-        return 24 * 60
-
-    return None
-
-
-@enforce_types(path=(str, Path), cadence_path=(str, Path, type(None)))
-def stream_availability(
-    stream,
-    path: Path,
-    cadence_path: Path | None = None,
-) -> DayAvailability:
-    """
-    Return valid-sample count, latest timestamp, and coverage for one stream.
-
-    Parameters
-    ----------
-    stream:
-        MagPy stream containing ``time``, ``x``, ``y`` and ``z`` arrays.
-    path:
-        Source file path used for reporting.
-    cadence_path:
-        Optional path or filename used for cadence inference.
-
-    Returns
-    -------
-    DayAvailability
-        Coverage summary for this one file. Timestamps where all x/y/z values
-        are non-finite do not count as valid samples.
-    """
-
-    path = Path(path)
-    cadence_path = Path(cadence_path) if cadence_path is not None else path
-
-    try:
-        times = np.asarray(stream["time"], dtype=object)
-        x = np.asarray(stream["x"], dtype=float)
-        y = np.asarray(stream["y"], dtype=float)
-        z = np.asarray(stream["z"], dtype=float)
-    except Exception:
-        return DayAvailability(False, None, 0, None, None, None, str(path))
-
-    if len(times) == 0:
-        return DayAvailability(False, None, 0, None, None, None, str(path))
-
-    valid = np.isfinite(x) | np.isfinite(y) | np.isfinite(z)
-    if not np.any(valid):
-        return DayAvailability(False, None, 0, None, None, None, str(path))
-
-    valid_times = []
-    for t in times[valid]:
-        if not isinstance(t, datetime):
-            continue
-        if t.tzinfo is None:
-            valid_times.append(t.replace(tzinfo=timezone.utc))
+        self.email_config_path = Path(email_config_path)
+        self.recipients_path = Path(recipients_path)
+        self.alert_threshold = alert_threshold
+        self.monitor_status_path = Path(monitor_status_path)
+        if os.path.isfile(self.monitor_status_path) and not reset_monitor_status:
+            with open(self.monitor_status_path, 'r') as f:
+                self.monitor_status = json.loads(f.read())
         else:
-            valid_times.append(t)
-    valid_times = [t.astimezone(timezone.utc) for t in valid_times]
+            self.monitor_status = create_monitor_status(
+                site_configs,
+                self.mag_availability,
+                latest_allowed=self.now,
+            )
+        self.refresh_monitor_status_from_site_configs()
 
-    if not valid_times:
-        return DayAvailability(False, None, 0, None, None, None, str(path))
+    def refresh_monitor_status_from_site_configs(self):
+        """
+        Reconcile the loaded status JSON with current site configuration.
+        """
 
-    valid_times = sorted(set(valid_times))
-    latest = valid_times[-1]
-    valid_samples = len(valid_times)
-    cadence_seconds = None
-
-    if len(valid_times) > 1:
-        deltas = np.diff([t.timestamp() for t in valid_times])
-        positive_deltas = deltas[deltas > 0]
-        if len(positive_deltas) > 0:
-            cadence_seconds = float(np.median(positive_deltas))
-
-    data_frequency, expected_samples = frequency_from_seconds(cadence_seconds)
-    if expected_samples is None:
-        data_frequency, expected_samples = frequency_from_path(cadence_path)
-
-    coverage_percent = None
-    if expected_samples:
-        coverage_percent = round(
-            min(100.0, (valid_samples / expected_samples) * 100),
-            3,
+        self.monitor_status = refresh_monitor_status_from_site_configs(
+            self.site_configs,
+            self.monitor_status,
+            self.mag_availability,
+            self.now,
         )
 
-    return DayAvailability(
-        has_data=True,
-        latest=latest,
-        valid_samples=valid_samples,
-        expected_samples=expected_samples,
-        coverage_percent=coverage_percent,
-        data_frequency=data_frequency,
-        source_file=str(path),
-    )
+    def get_date(self, date=None, now=None):
+        """
+        Return a copy of monitor status updated with one archive day's files.
 
+        ``now`` is used to clamp future measurements and calculate
+        ``time_since_last``. Passing it explicitly makes historical tests
+        deterministic.
+        """
 
-@enforce_types(candidate=DayAvailability, current=DayAvailability)
-def is_better_availability(
-    candidate: DayAvailability,
-    current: DayAvailability,
-) -> bool:
-    """
-    Return whether a candidate file is a better daily availability source.
-
-    Alerting depends on the freshest valid measurement. Coverage is only a
-    tie-breaker between files with the same latest timestamp.
-    """
-
-    if not candidate.has_data:
-        return False
-
-    if not current.has_data:
-        return True
-
-    if candidate.latest is not None and current.latest is None:
-        return True
-
-    if candidate.latest is None:
-        return False
-
-    if current.latest is not None:
-        if candidate.latest > current.latest:
-            return True
-        if candidate.latest < current.latest:
-            return False
-
-    candidate_coverage = candidate.coverage_percent
-    current_coverage = current.coverage_percent
-    if candidate_coverage is not None and current_coverage is None:
-        return True
-    if candidate_coverage is None:
-        return candidate.valid_samples > current.valid_samples
-
-    return candidate_coverage > current_coverage
-
-
-@enforce_types(site_code=str, day=datetime, data_root=(str, Path))
-def day_data_availability(site_code: str, day: datetime, data_root: Path) -> DayAvailability:
-    """
-    Return valid data availability for one site on one UTC day.
-
-    The monitor may have multiple candidate files for a site/day, for example
-    second and minute IAGA products. This function evaluates every existing
-    candidate file and returns the freshest valid measurement summary, using
-    coverage as a tie-breaker when timestamps match.
-
-    Parameters
-    ----------
-    site_code:
-        Normalised site code used in filenames.
-    day:
-        UTC day to inspect.
-    data_root:
-        Archive root containing ``YYYY/MM/DD`` folders.
-
-    Returns
-    -------
-    DayAvailability
-        Freshest valid summary found for the day, or an empty summary when no
-        valid data are present.
-    """
-
-    data_root = Path(data_root)
-    best = DayAvailability(False, None, 0, None, None, None, None)
-
-    for path in candidate_files_for_day(data_root, site_code, day):
-        if not path.exists():
-            continue
-
-        try:
-            read_result = read_magnetometer_file_with_metadata(path)
-            availability = stream_availability(
-                read_result.stream,
-                read_result.source_path,
-                cadence_path=read_result.cadence_path,
-            )
-        except Exception:
-            continue
-
-        if not availability.has_data:
-            continue
-
-        if is_better_availability(availability, best):
-            best = availability
-
-    return best
-
-
-@enforce_types(site_code=str, day=datetime, data_root=(str, Path))
-def day_has_valid_data(site_code: str, day: datetime, data_root: Path) -> tuple[bool, datetime | None]:
-    """
-    Return whether a site has any valid x/y/z data on a given day.
-
-    Also returns the latest valid timestamp from that day, if present.
-    """
-
-    availability = day_data_availability(site_code, day, data_root)
-    return availability.has_data, availability.latest
-
-
-@enforce_types(site_code=str, data_root=(str, Path), day=datetime)
-def availability_job(site_code: str, data_root: Path, day: datetime) -> tuple[str, DayAvailability]:
-    """
-    Run one site/day availability check for parallel execution.
-    """
-    day = utc_archive_day(day)
-    return day.strftime("%Y-%m-%d"), day_data_availability(site_code, day, data_root)
-
-
-@enforce_types(site=SiteConfig, site_data_root=(str, Path), day=datetime)
-def site_availability_job(
-    site: SiteConfig,
-    site_data_root: Path,
-    day: datetime,
-) -> tuple[SiteConfig, str, DayAvailability]:
-    """
-    Run one site/day availability check and include the site in the result.
-    """
-
-    date_key, availability = availability_job(site.code, site_data_root, day)
-    return site, date_key, availability
-
-
-@enforce_types(
-    sites=list,
-    data_root=(str, Path, Mapping),
-    start_date=datetime,
-    end_date=datetime,
-    output_path=(str, Path),
-    parallel_jobs=int,
-    show_progress=bool,
-    update_existing=bool,
-)
-def build_availability_lookup(
-    sites,
-    data_root,
-    start_date,
-    end_date,
-    output_path,
-    parallel_jobs=1,
-    show_progress=True,
-    update_existing=False,
-):
-    """
-    Write daily availability JSON for a set of sites.
-
-    ``data_root`` may be one shared archive root or a dictionary mapping
-    normalised site codes to archive roots. A site's own ``data_root`` field
-    takes precedence over either form.
-
-    ``parallel_jobs`` controls site/day parallelism. Use ``1`` for serial
-    execution, or a larger value to use joblib with a tqdm progress bar.
-
-    When ``update_existing`` is true, an existing output file is loaded and
-    dates in the requested range are recalculated and overwritten while dates
-    outside the range are preserved.
-
-    Parameters
-    ----------
-    sites:
-        List of ``SiteConfig`` objects to include in the output.
-    data_root:
-        One shared archive root, or a mapping from site code to archive root.
-    start_date, end_date:
-        Inclusive date/time range to calculate. Values are normalised to UTC
-        archive days before filenames are built.
-    output_path:
-        JSON file to write.
-    parallel_jobs:
-        Number of joblib workers. ``1`` runs serially.
-    show_progress:
-        Whether to show the joblib-backed tqdm progress bar.
-    update_existing:
-        If true, merge into an existing file while overwriting the requested
-        date range. If false, rebuild the output from only the requested range.
-    """
-
-    from joblib import Parallel, delayed
-
-    output_path = Path(output_path)
-    start_date = utc_archive_day(start_date)
-    end_date = utc_archive_day(end_date)
-
-    if update_existing and output_path.exists():
-        lookup = json.loads(output_path.read_text(encoding="utf-8"))
-        lookup.setdefault("stations", {})
-    else:
-        lookup = {
-            "generated_at": datetime.now(timezone.utc).isoformat(),
-            "stations": {},
-        }
-
-    lookup["generated_at"] = datetime.now(timezone.utc).isoformat()
-
-    days = []
-    day = start_date
-
-    while day <= end_date:
-        days.append(day)
-        day += timedelta(days=1)
-
-    jobs = [
-        (site, data_root_for_site(site, data_root), day)
-        for site in sites
-        for day in days
-    ]
-
-    if parallel_jobs == 1:
-        job_results = [
-            (site, *availability_job(site.code, site_data_root, day))
-            for site, site_data_root, day in jobs
-        ]
-    elif jobs:
-        with tqdm_joblib(
-            total=len(jobs),
-            desc_prefix="Checking magnetometer availability",
-            unit="day",
-            enabled=show_progress,
-        ):
-            job_results = Parallel(
-                n_jobs=parallel_jobs,
-                prefer="processes",
-                backend="loky",
-            )(
-                delayed(site_availability_job)(site, site_data_root, day)
-                for site, site_data_root, day in jobs
-            )
-    else:
-        job_results = []
-
-    results_by_site = {}
-    for site, date_key, availability in job_results:
-        results_by_site.setdefault(site.code, {"site": site, "dates": {}})
-        results_by_site[site.code]["dates"][date_key] = availability
-
-    for site in sites:
-        site_data_root = data_root_for_site(site, data_root)
-        station = lookup["stations"].get(site.code, {}) if update_existing else {}
-        available_dates = dict(station.get("available_dates", {}))
-        coverage_percent_by_date = dict(station.get("coverage_percent_by_date", {}))
-        data_frequency_by_date = dict(station.get("data_frequency_by_date", {}))
-        valid_samples_by_date = dict(station.get("valid_samples_by_date", {}))
-        expected_samples_by_date = dict(station.get("expected_samples_by_date", {}))
-        latest_valid_measurement_by_date = dict(
-            station.get("latest_valid_measurement_by_date", {})
-        )
-        source_file_by_date = dict(station.get("source_file_by_date", {}))
-        last_available_date = None
-        last_valid_measurement = None
-        date_results = results_by_site.get(site.code, {}).get("dates", {})
-
-        for day in days:
-            date_key = day.strftime("%Y-%m-%d")
-
-            availability = date_results.get(
-                date_key,
-                DayAvailability(False, None, 0, None, None, None, None),
-            )
-            previous_had_data = bool(available_dates.get(date_key))
-            previous_latest = parse_lookup_datetime(
-                latest_valid_measurement_by_date.get(date_key)
-            )
-            if update_existing and previous_had_data:
-                if availability.latest is None:
-                    continue
-                if previous_latest is not None and availability.latest < previous_latest:
-                    continue
-
-            data_frequency = availability.data_frequency or site.assumed_data_frequency
-            expected_samples = (
-                availability.expected_samples
-                or expected_samples_from_frequency(data_frequency)
-            )
-            coverage_percent = availability.coverage_percent
-            if coverage_percent is None and availability.has_data and expected_samples:
-                coverage_percent = round(
-                    min(100.0, (availability.valid_samples / expected_samples) * 100),
-                    3,
-                )
-            elif not availability.has_data:
-                coverage_percent = 0.0
-
-            available_dates[date_key] = availability.has_data
-            coverage_percent_by_date[date_key] = coverage_percent
-            data_frequency_by_date[date_key] = data_frequency
-            valid_samples_by_date[date_key] = availability.valid_samples
-            expected_samples_by_date[date_key] = expected_samples
-            latest_valid_measurement_by_date[date_key] = (
-                availability.latest.isoformat() if availability.latest else None
-            )
-            source_file_by_date[date_key] = availability.source_file
-
-        for date_key in sorted(available_dates):
-            if not available_dates[date_key]:
+        if date is None:
+            date = self.now.date()
+        if now is None:
+            now = self.now
+        else:
+            now = utc_timestamp(now)
+        monitor_status = self.monitor_status.copy()
+        for site in self.site_configs:
+            if site.permanently_off:
                 continue
-            last_available_date = date_key
-            last_valid_measurement = latest_valid_measurement_by_date.get(date_key)
-            if (
-                last_valid_measurement is None
-                and date_key == station.get("last_available_date")
-            ):
-                last_valid_measurement = station.get("last_valid_measurement")
+            site_files = get_files(date, site)
+            latest_time = None
+            for site_file in site_files:
+                file_latest_time = latest_valid_time_from_file(
+                    site_file,
+                    site.null_data_value,
+                    latest_allowed=now,
+                )
+                if latest_time is None or file_latest_time > latest_time:
+                    latest_time = file_latest_time
 
-        if last_available_date is None:
-            last_available_date = station.get("last_available_date")
-            last_valid_measurement = station.get("last_valid_measurement")
+            if latest_time is not None:
+                if monitor_status['stations'][site.code]['last_measurement']==str(pd.NaT) or latest_time > pd.Timestamp(monitor_status['stations'][site.code]['last_measurement']):
+                    monitor_status['stations'][site.code]['last_measurement'] = str(latest_time)
+                    monitor_status['stations'][site.code]['time_since_last'] = str(now-latest_time)
+        return monitor_status
+    
+    def update_monitor_status(self):
+        """
+        Scan the recent archive window and update ``self.monitor_status``.
+        """
 
-        lookup["stations"][site.code] = {
-            "name": site.name,
-            "data_root": str(site_data_root),
-            "active": site.active,
-            "permanently_off": site.permanently_off,
-            "last_available_date": last_available_date,
-            "last_valid_measurement": last_valid_measurement,
-            "available_dates": available_dates,
-            "coverage_percent_by_date": coverage_percent_by_date,
-            "data_frequency_by_date": data_frequency_by_date,
-            "valid_samples_by_date": valid_samples_by_date,
-            "expected_samples_by_date": expected_samples_by_date,
-            "latest_valid_measurement_by_date": latest_valid_measurement_by_date,
-            "source_file_by_date": source_file_by_date,
-        }
+        for date in pd.date_range(start=self.now-pd.Timedelta(days=2), end=self.now, freq='D'):
+            self.monitor_status.update(self.get_date(date, self.now))
+        self.monitor_status['generated_at'] = self.now.isoformat()
+    
+    def check_status(self):
+        """
+        Mark sites online/offline according to ``alert_threshold``.
 
-    output_path.parent.mkdir(parents=True, exist_ok=True)
-    output_path.write_text(json.dumps(lookup, indent=2), encoding="utf-8")
+        ``status_change`` is set only when a site crosses a status boundary.
+        Email sending clears that flag after the corresponding notification is
+        queued.
+        """
+
+        checked_at = utc_timestamp(self.monitor_status.get('generated_at', self.now))
+        if checked_at is pd.NaT:
+            checked_at = self.now
+
+        for site in self.site_configs:
+            if site.permanently_off:
+                continue
+            last_measurement = pd.Timestamp(self.monitor_status['stations'][site.code]['last_measurement'])
+            if last_measurement is pd.NaT:
+                time_since_last = pd.NaT
+            else:
+                if last_measurement.tzinfo is None:
+                    last_measurement = last_measurement.tz_localize('UTC')
+                else:
+                    last_measurement = last_measurement.tz_convert('UTC')
+                time_since_last = checked_at - last_measurement
+                self.monitor_status['stations'][site.code]['time_since_last'] = str(time_since_last)
+
+            if time_since_last is pd.NaT or time_since_last > self.alert_threshold:
+                if self.monitor_status['stations'][site.code]['status'] != 'offline':
+                    self.monitor_status['stations'][site.code]['status_change'] = True
+                    self.monitor_status['stations'][site.code]['status'] = 'offline'
+
+            else:
+                if self.monitor_status['stations'][site.code]['status'] != 'online':
+                    self.monitor_status['stations'][site.code]['status_change'] = True
+                    self.monitor_status['stations'][site.code]['status'] = 'online'
+
+    def email_alert(self):
+        """
+        Send batched outage and restored emails for pending status changes.
+        """
+
+        outage_events = []
+        restored_events = []
+        for site in self.site_configs:
+            if site.permanently_off:
+                continue
+            # Only queue transition emails. Persistent outages are deduplicated
+            # by leaving status_change false after the first notification.
+            elif self.monitor_status['stations'][site.code]['status_change'] and self.monitor_status['stations'][site.code]['status'] == 'offline':
+                outage_events.append([site, self.monitor_status['stations'][site.code]])
+                self.monitor_status['stations'][site.code]['status_change']= False
+            elif self.monitor_status['stations'][site.code]['status_change'] and self.monitor_status['stations'][site.code]['status'] == 'online':
+                restored_events.append([site, self.monitor_status['stations'][site.code]])
+                self.monitor_status['stations'][site.code]['status_change']= False
+        if outage_events:
+            site_count = len(outage_events)
+            subject = (
+                f"Magnetometer warning: {outage_events[0][0].code} is not sending data"
+                if site_count == 1
+                else f"Magnetometer warning: {number_word(site_count)} sites are not sending data"
+            )
+            send_batched_status_email(
+                subject=subject,
+                template_path=self.outage_email_template,
+                config=self.email_config_path,
+                recipients=self.recipients_path,
+                checked_at= pd.Timestamp(self.monitor_status['generated_at'], tz='UTC'),
+                events=outage_events,
+                threshold_minutes=round(self.alert_threshold.total_seconds() / 60),
+            )
+
+        if restored_events:
+            site_count = len(restored_events)
+            subject = (
+                f"Magnetometer restored: {restored_events[0][0].code} is sending data again"
+                if site_count == 1
+                else f"Magnetometer restored: {number_word(site_count)} sites are sending data again"
+            )
+            send_batched_status_email(
+                subject=subject,
+                template_path=self.restored_email_template,
+                config=self.email_config_path,
+                recipients=self.recipients_path,
+                checked_at= pd.Timestamp(self.monitor_status['generated_at'], tz='UTC'),
+                events=restored_events,
+            )
+
+    def save_monitor_status(self):
+        """
+        Persist ``self.monitor_status`` as pretty-printed JSON.
+        """
+
+        with open(self.monitor_status_path, 'w') as f:
+            f.write(json.dumps(self.monitor_status, indent=2))
+    
+    def run_monitor(self):
+        """
+        Run one full monitor cycle: update, classify, notify, and save.
+        """
+
+        self.update_monitor_status()
+        self.check_status()
+        self.email_alert()
+        self.save_monitor_status()
