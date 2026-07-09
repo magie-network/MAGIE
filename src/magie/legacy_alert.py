@@ -6,7 +6,7 @@ import json
 from pathlib import Path
 import re
 from collections.abc import Callable
-from datetime import date, datetime, timedelta
+from datetime import date, datetime, timedelta, timezone
 from html import escape
 from string import Template
 
@@ -403,7 +403,7 @@ def alert(template: str = './email_templates/legacy_template.html',
     raw_template = template_path.read_text(encoding="utf-8")
     site_block_template_text = extract_site_block(raw_template)
     site_blocks_rendered: list[str] = []
-    now_time= pd.Timestamp.now()
+    now_time = pd.Timestamp.now(tz="UTC").tz_localize(None)
     if True:
         Ks = []
         site_alerts_triggered = []
@@ -596,7 +596,7 @@ def clean_alert_log(
     log_path : str or pathlib.Path, optional
         JSON alert log to clean.
     today : pandas.Timestamp or datetime.datetime or datetime.date or str or None, optional
-        Reference date for pruning. Defaults to the current local date and is
+        Reference date for pruning. Defaults to the current UTC date and is
         normalized to a pandas timestamp before pruning.
 
     Returns
@@ -605,7 +605,7 @@ def clean_alert_log(
         Number of invalid keys encountered during pruning.
     """
     log_path = Path(log_path)
-    today = pd.Timestamp(today or date.today())
+    today = pd.Timestamp(today or datetime.now(timezone.utc).date())
     logs = load_log(log_path)
     pruned_logs, invalid_keys = prune_log_entries(logs, today.date())
 
