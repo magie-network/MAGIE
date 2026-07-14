@@ -39,13 +39,17 @@ conda env create -f ./binder/environment_alerts.yml
 conda activate magie-alerts
 
 ## Tutorials
-In the notebook folder a set of notebooks can be found to demonstrate how to use the magie package
+In the notebook folder a set of notebooks can be found to demonstrate how to use the magie package.
+
+The `FLO_live_data_wrapper.py` script in `notebooks/` downloads the latest raw X, Y and Z components from Florence Court variometer (FLO), supplied by the British Geological Survey (BGS). The script saves the most recent 24-hour FLO 1-second data in both tab-delimited MagIE format and IAGA-2002 format, and saves the latest 3-day timeseries as a PNG file. Contact BGS to obtain data download authorisation.
+
+FLO is set up and operated by BGS. For more information, visit [SAGE variometer data page](https://intermagnet.bgs.ac.uk/research/SAGE/variometer_data.html?). Ownership and copyright of the FLO data is retained by UKRI.
 
 
 # File Problems
-- Cases of repeated time stamps with different measurement values for dunsink and armagh.
-- some files have lines only part written as if it broke part way through writing the file (current download code removes these lines but still grabs the remaining good parts of the file)
-- there are varied cadence for some sites some have only 1-min others sometimes have 1 second other times have 1 minute
+- Cases of repeated time stamps with different measurement values for Dunsink and Armagh daily 1-second data files. The duplication of timestamps can be checked and fixed using the tutorial example in `Plot_data.ipynb` of the notebook
+- Some files have lines only part written as if it broke part way through writing the file (current download code removes these lines but still grabs the remaining good parts of the file)
+- There are varied cadence for some sites some have only 1-minute data (E.g. Valentia Observatory) others sometimes have 1-second
 - 
 
 # [To do list](todo.md)
