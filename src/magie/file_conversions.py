@@ -68,6 +68,14 @@ def _infer_iaga_step_seconds(times):
     return float(deltas.min())
 
 
+def _normalise_legacy_date_utc(date_utc):
+    """Parse legacy MagIE day-first timestamps as UTC second-precision values."""
+    parsed = pd.to_datetime(date_utc, utc=True, dayfirst=True)
+    if isinstance(parsed, pd.Series):
+        return parsed.dt.floor('s')
+    return parsed.floor('s')
+
+
 @enforce_types(file=pd.DataFrame, step_seconds=(int, float, np.number, type(None)))
 def _regularize_iaga_times(file, step_seconds=None):
     """Reindex onto a complete regular time grid so missing timestamps are explicit."""
@@ -500,7 +508,7 @@ def magie_legacy2magie(filename):
         file['Site'] = [site] * len(file)
 
         # Ensure timestamps are UTC-aware and second-precision
-        file['Date_UTC'] = pd.to_datetime(file['Date_UTC'], utc=True).dt.floor('s')
+        file['Date_UTC'] = _normalise_legacy_date_utc(file['Date_UTC'])
 
     except ParserError:
         # Handle ParserError by modifying the file content and re-reading it
@@ -521,7 +529,7 @@ def magie_legacy2magie(filename):
         file['Site'] = [site] * len(file)
 
         # Ensure timestamps are UTC-aware and second-precision
-        file['Date_UTC'] = pd.to_datetime(file['Date_UTC'], utc=True).dt.floor('s')
+        file['Date_UTC'] = _normalise_legacy_date_utc(file['Date_UTC'])
     if not len(file):
         return
     # File bug handling when last line of the file contains incomplete data points
@@ -539,7 +547,7 @@ def magie_legacy2magie(filename):
     file['Site'] = [site] * len(file)
 
     # Ensure timestamps are UTC-aware and second-precision
-    file['Date_UTC'] = pd.to_datetime(file['Date_UTC'], utc=True).dt.floor('s')
+    file['Date_UTC'] = _normalise_legacy_date_utc(file['Date_UTC'])
     return file[drop_index]
 
 

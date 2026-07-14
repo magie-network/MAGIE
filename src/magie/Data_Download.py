@@ -13,6 +13,7 @@ import sys
 from urllib.request import urlretrieve
 from pandas.errors import ParserError
 from magie.utils import validinput, enforce_types
+from magie.file_conversions import _normalise_legacy_date_utc
 from tqdm import tqdm
 from dotenv import load_dotenv
 from pathlib import Path
@@ -136,28 +137,29 @@ def download_magie(start, end, sites=['arm', 'dun', 'val', 'bir'], save_file_nam
     str: The name of the file where the data is saved.
     """
     url_prefix = 'https://data.magie.ie/'
+    current_utc_year = dt.now(datetime.timezone.utc).year
 
     # Check for the earliest available year
     min_year = 0
-    for i in range(2000, dt.now().year, 1):
+    for i in range(2000, current_utc_year, 1):
         if requests.get(f"{url_prefix}{i}/").status_code < 400:
             min_year = i
             break
 
     # Raise an error if no year is found
     if not min_year:
-        raise ValueError(f'Unable to find the first year available in the range 2000-{dt.now().year}')
+        raise ValueError(f'Unable to find the first year available in the range 2000-{current_utc_year}')
 
     # Check for the latest available year
     max_year = 0
-    for i in range(dt.now().year, 2000, -1):
+    for i in range(current_utc_year, 2000, -1):
         if requests.get(f"{url_prefix}{i}/").status_code < 400:
             max_year = i
             break
 
     # Raise an error if no year is found
     if not max_year:
-        raise ValueError(f'Unable to find the last year available in the range 2000-{dt.now().year}')
+        raise ValueError(f'Unable to find the last year available in the range 2000-{current_utc_year}')
 
     # Adjust the start date if it is earlier than the first available year
     if start < np.datetime64(f'{min_year}-01-01'):
@@ -228,7 +230,7 @@ def download_magie(start, end, sites=['arm', 'dun', 'val', 'bir'], save_file_nam
                 file['Site'] = [site] * len(file)
 
                 # Ensure timestamps are UTC-aware and second-precision
-                file['Date_UTC'] = pd.to_datetime(file['Date_UTC'], utc=True).dt.floor('s')
+                file['Date_UTC'] = _normalise_legacy_date_utc(file['Date_UTC'])
                 start_ts = pd.Timestamp(start)
                 end_ts = pd.Timestamp(end)
                 if start_ts.tzinfo is None:
@@ -273,7 +275,7 @@ def download_magie(start, end, sites=['arm', 'dun', 'val', 'bir'], save_file_nam
                 file['Site'] = [site] * len(file)
 
                 # Ensure timestamps are UTC-aware and second-precision
-                file['Date_UTC'] = pd.to_datetime(file['Date_UTC'], utc=True).dt.floor('s')
+                file['Date_UTC'] = _normalise_legacy_date_utc(file['Date_UTC'])
                 start_ts = pd.Timestamp(start)
                 end_ts = pd.Timestamp(end)
                 if start_ts.tzinfo is None:

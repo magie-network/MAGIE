@@ -140,6 +140,22 @@ SITE_METADATA = {
         "comments" : None,
         "k9_threshold": 630,
     },
+    "birr": {
+        "station_name": "Birr",
+        "source_of_data" : "Dubin Institute of Advanced Studies",
+        "iaga_code": "BIR",
+        "site_code": "bir",
+        "geodetic_latitude": 53.09,
+        "geodetic_longitude": -7.92,
+        "elevation" : 0,
+        "reported" : "XYZF",
+        "sensor_orientation" : "XYZF",
+        "digital_sampling" : "1-second",
+        "data_interval_type" : "1-second",
+        "data_type" : "variation",
+        "comments" : None,
+        "k9_threshold": "unknown",
+    },
 }
 
 SITE_ALIASES = {
@@ -152,6 +168,8 @@ SITE_ALIASES = {
     "valentia": "valentia",
     "arm": "armagh",
     "armagh": "armagh",
+    "bir": "birr",
+    "birr": "birr",
 }
 
 @enforce_types()

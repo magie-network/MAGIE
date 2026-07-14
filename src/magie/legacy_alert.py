@@ -1,13 +1,14 @@
 from magie import plot_k, live_k
 import pandas as pd
 from magie.utils import enforce_types, get_site_metadata
-from magie.email_utils import render_html_template, send_html_email, load_email_config, load_recipients, load_mastodon_config
+from magie.email_utils import send_html_email, load_email_config, load_recipients, load_mastodon_config
 import json
 from pathlib import Path
-import tempfile
 import re
 from collections.abc import Callable
-from datetime import date, datetime, timedelta
+from datetime import date, datetime, timedelta, timezone
+from html import escape
+from string import Template
 
 
 @enforce_types(dt=pd.Timestamp)
@@ -34,6 +35,17 @@ def format_date_as_string(dt: pd.Timestamp) -> str:
         suffix = {1: "st", 2: "nd", 3: "rd"}.get(day % 10, "th")
 
     return f"{day}{suffix} of {dt.strftime('%B %Y')}"
+
+
+def render_html_template_text(
+    template_text: str,
+    values: dict[str, str | int | float],
+) -> str:
+    """Render an HTML template string using escaped safe substitution."""
+    safe_values = {
+        key: escape(str(value)) for key, value in values.items()
+    }
+    return Template(template_text).safe_substitute(safe_values)
 
 
 @enforce_types(kp=(int, float))
@@ -391,9 +403,8 @@ def alert(template: str = './email_templates/legacy_template.html',
     raw_template = template_path.read_text(encoding="utf-8")
     site_block_template_text = extract_site_block(raw_template)
     site_blocks_rendered: list[str] = []
-    now_time= pd.Timestamp.now()
-    with tempfile.TemporaryDirectory(prefix="magie_alert_") as tmpdir:
-        tmpdir = Path(tmpdir)
+    now_time = pd.Timestamp.now(tz="UTC").tz_localize(None)
+    if True:
         Ks = []
         site_alerts_triggered = []
         # Log entries are intentionally deferred until after the email send
@@ -439,9 +450,6 @@ def alert(template: str = './email_templates/legacy_template.html',
                 print("Alert condition met, preparing email...")
             html_inputs = {}
 
-            site_block_tmp = tmpdir / "_site_block.html"
-            site_block_tmp.write_text(site_block_template_text, encoding="utf-8")
-
             html_inputs.update({'k_value': int(kvals['K_index']),
                         'site': met['station_name'],
                         'start_ut': str(kvals.name.time())[:-3],
@@ -449,7 +457,7 @@ def alert(template: str = './email_templates/legacy_template.html',
                         'date': format_date_as_string(kvals.name),
                         'storm_class': classify_storm(kvals['K_index'])})
 
-            rendered_block = render_html_template(str(site_block_tmp), html_inputs)
+            rendered_block = render_html_template_text(site_block_template_text, html_inputs)
             site_blocks_rendered.append(rendered_block)
 
             # Keep the archive link tied to the alert timestamp rather than
@@ -466,11 +474,10 @@ def alert(template: str = './email_templates/legacy_template.html',
 
             stitched_template = replace_site_block(raw_template, combined_blocks_html)
 
-            stitched_tmp = tmpdir / "_stitched.html"
-            stitched_tmp.write_text(stitched_template, encoding="utf-8")
-            html_email = render_html_template(str(stitched_tmp),
-                                            {"archive_url": archive_url},
-                                            )
+            html_email = render_html_template_text(
+                stitched_template,
+                {"archive_url": archive_url},
+            )
             cfg = load_email_config(email_config_path)
             recipients = load_recipients(recipients_path)
             send_html_email(
@@ -589,7 +596,7 @@ def clean_alert_log(
     log_path : str or pathlib.Path, optional
         JSON alert log to clean.
     today : pandas.Timestamp or datetime.datetime or datetime.date or str or None, optional
-        Reference date for pruning. Defaults to the current local date and is
+        Reference date for pruning. Defaults to the current UTC date and is
         normalized to a pandas timestamp before pruning.
 
     Returns
@@ -598,7 +605,7 @@ def clean_alert_log(
         Number of invalid keys encountered during pruning.
     """
     log_path = Path(log_path)
-    today = pd.Timestamp(today or date.today())
+    today = pd.Timestamp(today or datetime.now(timezone.utc).date())
     logs = load_log(log_path)
     pruned_logs, invalid_keys = prune_log_entries(logs, today.date())
 
