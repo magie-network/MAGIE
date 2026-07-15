@@ -58,9 +58,9 @@ FLO is set up and operated by BGS. For more information, visit [SAGE variometer 
 
 
 # File Problems
-- Cases of repeated time stamps with different measurement values for Dunsink and Armagh daily 1-second data files. The duplication of timestamps can be checked and fixed using the tutorial example in `Plot_data.ipynb` of the notebook
+- Cases of repeated time stamps with different measurement values for Dunsink and Armagh.
 - Some files have lines only part written as if it broke part way through writing the file (current download code removes these lines but still grabs the remaining good parts of the file)
-- There are varied cadence for some sites some have only 1-minute data (E.g. Valentia Observatory) others sometimes have 1-second
+- There are varied cadence for some sites some are only 1-minute others sometimes have 1-second
 - 
 
 # [To do list](todo.md)
