@@ -679,57 +679,107 @@ def convert_magie_to_iaga_archive(
 def space2tab_delim(base_dir, obs):
     """
     Converts space-delimited text files to tab-delimited format.
+    Searching recursively through base_dir/yyyy/mm/dd/txt/. To convert
+    files in a in a specific month only, set base_dir to base_dir/yyyy/mm/.
+    Author: Guanren Wang (gwang1@tcd.ie)
 
-    Searches recursively through
-    base_dir/yyyy/mm/dd/txt/
-    for observatory files and converts them from:
-    Date & Time Index# Bx By Bz
-    2026-05-19 00:00:00 1 18710.72 190.99 46193.97
-    to
-    Date & Time\tIndex#\tBx\tBy\tBz
-    19/05/2026 00:00:00\t1\t18710.72\t190.99\t46193.97
+    Handles both quoted and unquoted formats, with or without an optional
+    Bf (total field) column.
+
+    Input format supported (space-delimited):
+    Quoted
+        "Date & Time" Index# Bx By Bz
+        "19/05/2026 00:00:00" 1 18710.72 190.99 46193.97
+    Unquoted
+        Date & Time Index# Bx By Bz
+        19/05/2026 00:00:00 1 18710.72 190.99 46193.97
+
+    Output format (tab-delimited, DD/MM/YYYY date convention):
+        Date & Time\tIndex#\tBx\tBy\tBz
+        19/05/2026 00:00:00\t1\t18710.72\t190.99\t46193.97
 
     File already in tab-delimited or empty files are skipped.
 
-    Parameters:
-    -----------
+    Parameters
+    ----------
     base_dir: pathlib.Path
-        Base folder where nested base_dir/year/mon/dd/txt/ lives.
+        Base folder where nested base_dir/year/mon/dd/txt/ live.
     obs: str
-        iaga three-letter observatory code e.g. "val"
+        Lower-case IAGA three-letter observatory code e.g. "val"
 
-    Returns:
-    --------
-    Overwrites existing space-delimited files with tab-delimited versions.
+    Returns
+    -------
+    None
+        Overwrites space-delimited files in place with tab-delimited
+        equivalents. Original files are preserved if any error occurs
+        during processing. Errors are reported per file and continues
+        for remaining files.
     """
     for file_path in Path(base_dir).rglob(f"{obs}????????.txt"):
         # skip empty files to avoid EmptyDataError
         if file_path.stat().st_size == 0:
             continue
-
-        # check whether file is already in tab delimited
-        with open(file_path, 'r') as f:
-            first_line = f.readline()
-        if '\t' in first_line:
-            print(f"File is already tab-delimited, skipping {file_path.name}")
-            continue
-
-        # read space-delimited file
-        df = pd.read_csv(
-            file_path,
-            sep=r"\s+",
-            names=["Date", "Time", "Index#", "Bx", "By", "Bz"],
-            skiprows=1
-        )
-        df["Date"] = df["Date"].astype(str)
-        df["Time"] = df["Time"].astype(str)
-        # rewrite space-delimited data as tab-delimited
-        with open(file_path, 'w') as f:
-            f.write("Date & Time\tIndex#\tBx\tBy\tBz\n")
-            for i, (_, row) in enumerate(df.iterrows(), start=1):
-                dt_str = row["Date"] + " " + row["Time"]
-                dt_str = pd.Timestamp(dt_str).strftime("%d/%m/%Y %H:%M:%S")
-                f.write(
-                    f"{dt_str}\t{i}\t"
-                    f"{row['Bx']:.2f}\t{row['By']:.2f}\t{row['Bz']:.2f}\n"
+        try:
+            # check whether file is already in tab delimited
+            with open(file_path, 'r') as f:
+                header_line = f.readline()
+                first_data_line = f.readline()
+            if '\t' in header_line:
+                print(
+                    f"File is already tab-delimited, skipping {file_path.name}"
                 )
+                continue
+            # detect quoted datetime format
+            is_quoted = first_data_line.startswith('"')
+            # detect presence of Bf column from header
+            has_bf = "Bf" in header_line
+
+            if is_quoted:
+                cols = ["Date & Time", "Index#", "Bx", "By", "Bz"] + \
+                    (["Bf"] if has_bf else [])
+                # read space-delimited file if Date & Time is quoted
+                df = pd.read_csv(
+                    file_path,
+                    sep=r"\s+",
+                    quotechar='"',
+                    names=cols,
+                    skiprows=1
+                )
+                df["Date & Time"] = pd.to_datetime(df["Date & Time"],
+                                                   format="%d/%m/%Y %H:%M:%S")
+            else:
+                cols = ["Date", "Time", "Index#", "Bx", "By", "Bz"] + \
+                    (["Bf"] if has_bf else [])
+                # read space-delimited file if unquoted
+                df = pd.read_csv(
+                    file_path,
+                    sep=r"\s+",
+                    names=cols,
+                    skiprows=1
+                )
+                df["Date & Time"] = pd.to_datetime(
+                    df["Date"].astype(str) + " " + df["Time"].astype(str),
+                    format="%d/%m/%Y %H:%M:%S"
+                    )
+            # rewrite space-delimited data as tab-delimited
+            # write to memory string first
+            header = "Date & Time\tIndex#\tBx\tBy\tBz" + \
+                ("\tBf\n" if has_bf else "\n")
+            lines = [header]
+            for i, (_, row) in enumerate(df.iterrows(), start=1):
+                dt_str = pd.Timestamp(
+                    row["Date & Time"]
+                    ).strftime("%d/%m/%Y %H:%M:%S")
+                line = (
+                    f"{dt_str}\t{i}\t{row['Bx']:.2f}\t"
+                    f"{row['By']:.2f}\t{row['Bz']:.2f}"
+                )
+                if has_bf:
+                    line += f"\t{row['Bf']:.2f}"
+                lines.append(line + "\n")
+
+            with open(file_path, 'w') as f:
+                f.writelines(lines)
+        except Exception as e:
+            print(f"Error processing {file_path.name}: {e} - skipping")
+            continue

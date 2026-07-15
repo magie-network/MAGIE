@@ -42,24 +42,35 @@ base_dir = Path(r'../Data/')
 df = get_SAGE_variometer(pw_dir, printHeader=False)
 
 # save the online data to into <base_dir/year/mon/dd/txt/>
-save_SAGE_data(df, base_dir, freq='1s', obs="flo", flag=99999.00)
+obs = "flo"
+save_SAGE_data(df, base_dir, freq='1s', obs=obs, flag=99999.00)
 
-# if "Missing file : ..."" statement is printed
-# uncomment to import and call __generate_missing_day_ as below.
+"""
+if "Missing file : ..."" statement is printed, uncomment to
+import and call generate_missing_day function as below.
+"""
 # from magie.Data_Processing import generate_missing_day()
 # generate_missing_day(base_dir, "flo20260516.txt", obs='flo')
 
-# PLOT txt file data
-# define start_time, end_time and duration if not using None.
-# end_time = dt.datetime.now().replace(
-#     hour=23, minute=59, second=59, microsecond=0
-#     )
-# define number of days of time series data plotted
+"""
+Plot txt file data.
+Define start_time, end_time and duration if not using None. Uncomment below
+and comment out "Plot latest 3 days only" block.
+"""
+# import datetime as dt
 # duration = dt.timedelta(days=2)
+# end_time = dt.datetime(2026, 7, 14, 23, 59, 59)
 # start_time = (end_time - duration).replace(hour=0, minute=0, second=0)
-obs = "flo"
+# all_file_path, start_time, end_time = get_SAGE_filepaths(
+#     base_dir, start_time=None, end_time=end_time, duration=duration
+#     )
 
+"""
+Plot latest 3 days time series.
+Comment this out if start_time and end_time are defined manually above
+"""
 all_file_path, start_time, end_time = get_SAGE_filepaths(base_dir)
+
 # convert then save the daily file in <all_file_path> to IAGA-2002 format
 save_SAGE2iaga2002(
     all_file_path, base_dir, obs, site_name="florence court", print_msg=False
