@@ -137,7 +137,7 @@ def _iaga_filename(iaga_code, start_time, data_type, interval_extension):
 
 
 @enforce_types(value=(int, float, np.number, type(None)), missing_value=(int, float, np.number))
-def _format_iaga_component(value, missing_value=999999.00):
+def _format_iaga_component(value, missing_value=99999.00):
     """Format one magnetic component using the IAGA-2002 F9.2 layout."""
     if pd.isna(value):
         value = missing_value
@@ -148,15 +148,15 @@ def _format_iaga_component(value, missing_value=999999.00):
     values=(pd.Series, np.ndarray, list, tuple),
     missing_value=(int, float, np.number),
 )
-def _format_iaga_component_series(values, missing_value=999999.00):
+def _format_iaga_component_series(values, missing_value=99999.00):
     """Format a component column using the IAGA-2002 F9.2 layout."""
     if not isinstance(values, pd.Series):
         values = pd.Series(values)
     return values.fillna(missing_value).map("{:9.2f}".format)
 
 
-@enforce_types(file=pd.DataFrame)
-def _derived_total_field(file):
+@enforce_types(file=pd.DataFrame, missing_value=(int, float, np.number))
+def _derived_total_field(file, missing_value=99999.00):
     """Return observed total field or derive it from X, Y, Z when needed."""
     if "TFG" in file.columns and file["TFG"].notna().any():
         return file["TFG"], True
@@ -165,8 +165,11 @@ def _derived_total_field(file):
     if len(required) != 3:
         return pd.Series(np.nan, index=file.index), False
 
-    magnitude = np.sqrt(file["Bx"] ** 2 + file["By"] ** 2 + file["Bz"] ** 2)
-    return magnitude.where(file[["Bx", "By", "Bz"]].notna().all(axis=1)), False
+    # replace missing values with np.nan before total field calculation
+    xyz = file[required].replace(missing_value, np.nan)
+
+    magnitude = np.sqrt(xyz["Bx"]**2 + xyz["By"]**2 + xyz["Bz"]**2)
+    return magnitude, False
 
 
 @enforce_types(file=(str, pd.DataFrame), site=str)
@@ -457,7 +460,7 @@ def magie2iaga2002(
         series = component_map.get(component)
         if series is None:
             series = pd.Series(np.nan, index=file.index)
-        missing_value = 999999.00
+        missing_value = 99999.00
         formatted_components.append(_format_iaga_component_series(series, missing_value=missing_value))
 
     data_lines = date_str + " " + time_str + " " + doy
@@ -491,7 +494,7 @@ def magie_legacy2magie(filename):
     from pandas.errors import ParserError
 
     columns = ['Date_UTC', 'Index', 'Bx', 'By', 'Bz', 'E1', 'E2', 'E3', 'E4', 'TFG', 'TE', 'Volts']
-    site= filename.split('/')[-1].split('.')[0][:3]
+    site = filename.split('/')[-1].split('.')[0][:3]
     drop_index = columns.copy()
     drop_index[1] = 'Site'
     try:
@@ -536,10 +539,10 @@ def magie_legacy2magie(filename):
     # Check for object data types and handle them appropriately
     if 'O' in [file[col].dtype for col in file.columns[:-1]]:
         file = file.loc[0:len(file)-2]
-        
+
         if file['Date_UTC'].dtype == 'O':
             file['Date_UTC'] = pd.to_datetime(file.Date_UTC, dayfirst=True)
-        
+
         for column in columns[2:]:
             if file[column].dtype == 'O':
                 file[column] = file[column].astype('float64')
@@ -570,7 +573,7 @@ def magie_legacy2iaga2002(filename, **kwargs):
         IAGA-2002 file contents and the recommended output filename.
     """
     file = magie_legacy2magie(filename)
-    if not file is None:
+    if file is not None:
         return magie2iaga2002(file, **kwargs)
     return None, None
 
@@ -611,6 +614,7 @@ def _save_iaga2002_file_with_error_capture(
         return None
     except Exception as exc:
         return file, f"{type(exc).__name__}: {exc}"
+
 
 @enforce_types(
     archive_path_builder=Callable,
@@ -783,3 +787,126 @@ def space2tab_delim(base_dir, obs):
         except Exception as e:
             print(f"Error processing {file_path.name}: {e} - skipping")
             continue
+
+
+@enforce_types(
+        obs=str,
+        dir=Path,
+        fname=str,
+        output_dir=Path,
+        write_txt=bool
+        )
+def iaga2magie_xyzf(obs, input_dir, fname, output_dir=None, write_txt=False):
+    """
+    Convert an IAGA-2002 formatted file to MagIE data format,
+    with an option to write the output as a MagIE text file.
+
+    Reads an IAGA-2002 file with observatory-specific columns
+    OBSX, OBSY, OBSZ, OBSF then renames these columns to generic MagIE
+    column names, drops the DOY column, and adds a sequential index column.
+
+    If write_txt is True, the output is written to a MagIE-format text
+    file under output_dir/YYYY/MM/DD/txt/ with the filename
+    {obs}{YYYYMMDD}.txt, derived form the input fname.
+
+    Parameters
+    ----------
+    obs: str
+        Three-letter observatory code.
+    input_dir: pathlib.Path
+        Path folder where daily iaga-2002 day files live.
+    fname: str
+        File of the IAGA file, looking for 8-consecutive digits in:
+        FLO20260116.sec or flo20260116vsec.sec.
+    output_dir: pathlib.Path or None, optional
+        Root directory under which the MagIE text file is written,
+        do not include /YYYY/MM/DD/txt/. output_dir required if
+        write_txt is True. Defaults to None.
+    write_txt: bool, optional
+        If true, write the MagIE text file to
+        output_dir/YYYY/MM/DD/txt/{obs}{YYYYMMDD}.txt.
+        Defaults to False.
+
+    Returns
+    -------
+    df: pandas.DataFrame
+        DataFrame with DateTimeIndex as "Date & Time", and columns:
+        Index#, Bx, By, Bz, Bf.
+
+    Raises
+    ------
+    KeyError:
+        If expected IAGA three-letter code not found in file,
+        suggest a mismatch between obs and the file's column headers.
+    ValueError
+        If write_txt is True, but output_dir is None.
+    ValueError
+        If the date cannot be parsed from fname.
+
+    Example
+    -------
+    >>> iaga2magie_xyzf(
+        "flo", input_dir=Path("MAGIE/Data"), fname="flo20260911vsec.sec",
+        output_dir=Path("MAGIE/Data"),
+        write_txt=True
+        )
+    """
+    import re
+    from magie.Data_Processing import read_IAGA2002
+    if write_txt and output_dir is None:
+        raise ValueError(
+            "output_dir must be provided when write_txt is True."
+            )
+    df = read_IAGA2002(input_dir, fname)
+    df.drop(columns=["DOY"], inplace=True)
+    df['Index#'] = range(1, len(df) + 1)
+    ob = obs.upper()
+    old_col_names = [f"{ob}{x}" for x in ("X", "Y", "Z", "F")]
+    missing_cols = [col for col in old_col_names if col not in df.columns]
+    if missing_cols:
+        raise KeyError(
+            f"Expected columns {missing_cols} not found in {fname}. "
+            f"Check obs code '{obs}' matches {fname}'s column headers."
+            )
+    new_col_names = ("Bx", "By", "Bz", "Bf")
+    df.rename(columns=dict(zip(old_col_names, new_col_names)), inplace=True)
+    cols = ('Index#', "Bx", "By", "Bz", "Bf")
+    df = df.reindex(columns=[c for c in cols if c in df.columns])
+    if write_txt:
+        #  Parse date from fname e.g. 'flo20260528vsec.sec' -> '20260628'
+        match = re.search(r'(\d{8})', fname)
+        if not match:
+            raise ValueError(
+                f"Could not parse date from filename '{fname}'. "
+                f"Expected 8 consecutive digits e.g. '20260609'. "
+            )
+        date_str = match.group(1)
+        date = pd.Timestamp(date_str)
+        # Build out path: output_dir/YYYY/MM/DD/txt/
+        txt_dir = (
+            Path(output_dir)
+            / date.strftime("%Y")
+            / date.strftime("%m")
+            / date.strftime("%d")
+            / "txt"
+        )
+        txt_dir.mkdir(parents=True, exist_ok=True)
+        txt_fname = f"{obs.lower()}{date_str}.txt"
+        txt_path = txt_dir / txt_fname
+        # write MagIE text file, set nan values to 99999.00
+        df_out = df.copy()
+        df_out.insert(
+            0, "Date & Time", df_out.index.strftime("%d/%m/%Y %H:%M:%S")
+            )
+        df_out.reset_index(drop=True, inplace=True)
+        components = ["Bx", "By", "Bz", "Bf"]
+        for col in [c for c in components if c in df_out.columns]:
+            df_out[col] = df_out[col].map(
+                lambda x: f"{x:.2f}" if pd.notna(x) else "99999.00"
+                )
+        # write to file in tab-delimited MagIE format
+        with open(txt_path, 'w') as f:
+            f.write('\t'.join(df_out.columns) + '\n')
+            for _, row in df_out.iterrows():
+                f.write('\t'.join(str(v) for v in row.values) + '\n')
+    return df
