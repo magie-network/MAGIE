@@ -528,6 +528,7 @@ def plot_BxByBz(data: DataStream, logo_path: str | Path | None = None, show_logo
 
     return fig, ax_Bx, ax_By, ax_Bz
 
+
 @enforce_types(
     data=DataStream,
     logo_path=(str, Path, type(None)),
@@ -680,12 +681,10 @@ def plot_dH(data: DataStream, logo_path=None, show_logo= False, auto_xlim=True, 
     minor_tick_len=int,
     print_msg=bool,
 )
-def stack_plot(
-    df, obs_plot_list, padding_fraction, component_list,
-    means, scale_length, y_labels, title, file_name, output_file_path,
-    font_size=15, title_font=18, major_tick_len=20, minor_tick_len=5,
-    print_msg=False
-    ):
+def stack_plot(df, obs_plot_list, padding_fraction, component_list,
+               means, scale_length, y_labels, title, file_name,
+               output_file_path, font_size=15, title_font=18,
+               major_tick_len=20, minor_tick_len=5, print_msg=False):
     """
     Create 3-panel subplot of observatory timeseries.
     A station with a naturally large X, Y and Z values
@@ -700,12 +699,12 @@ def stack_plot(
     Parameters
     ----------
     df: pd.DataFrame
-        index timestamped as datetime object containing data with column header.
+        index timestamped as datetime obj containing data with column header.
         as OBSX, OBSY, OBSZ, .... Ensure the data frame index is datetime i.e.
         df.index = pd.to_datetime(df.index)
     obs_plot_list: list
-        Three-letter IAGA observatory code in a list of string separated elements.
-        E.g. ["ESK", "NGK", "VAL", "HAD"].
+        Three-letter IAGA observatory code in a list of string separated
+        elements. E.g. ["ESK", "NGK", "VAL", "HAD"].
     padding_fraction: float
         Used in equal-spacing offset for stacking based on maximum variation.
         Usually between 0.1 and 0.3 or 10-30% padding
@@ -959,10 +958,30 @@ def plot_variometer_data(start_time, end_time, obs, base_dir,
         # create daily figure directory even if no data exists for this day.
         daily_dir_fig.mkdir(parents=True, exist_ok=True)
         try:
+            if print_debug:
+                print(f"txt path: {fname}")
+                print(f"iaga2002 path: {iaga2002_daily_dir}")
+                print(f"fname exists: {fname.exists()}")
+                print(f"iaga2002 dir exists: {iaga2002_daily_dir.exists()}")
+                print(
+                    f"iaga2002 files: {list(iaga2002_daily_dir.glob('flo*'))}"
+                    )
             if fname.exists():
+                # dynamic column detection by reading in first data row to
+                # determine whether Bf is present (7 cols) or absent (6 cols)
+                with open(fname, 'r') as f:
+                    f.readline()  # skip header
+                    first_data_line = f.readline().strip()
+                n_cols = len(first_data_line.split())
+                if n_cols == 7:
+                    names = ["Date", "Time", "Index#", "Bx", "By", "Bz", "Bf"]
+                else:
+                    names = ["Date", "Time", "Index#", "Bx", "By", "Bz"]
+
                 df = pd.read_csv(
-                    fname, sep=r"\s+",
-                    names=["Date", "Time", "Index#", "Bx", "By", "Bz"],
+                    fname,
+                    sep=r"\s+",
+                    names=names,
                     skiprows=1,
                     na_values=99999.00
                     )
@@ -994,15 +1013,13 @@ def plot_variometer_data(start_time, end_time, obs, base_dir,
                     if print_debug:
                         print(f"No TXT or IAGA-2002 files found in {date_str}")
                     continue
-                df = read_IAGA2002(
-                    iaga_file.parent, iaga_file.name, print_debug=print_debug
-                    )
+                df = read_IAGA2002(iaga_file.parent, iaga_file.name)
                 df = df.replace(99999.00, np.nan)
                 df_list.append(df)
         except Exception as e:
             failed_days.append((date_str, str(e)))
             if print_debug:
-                print(f"Error reading data for {date_str}: {e}")
+                print(f"Error reading data for date string {date_str}: {e}")
             continue
     if not df_list:
         msg = (
