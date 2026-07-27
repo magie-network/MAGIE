@@ -52,7 +52,7 @@ conda activate magie-alerts
 ## Tutorials
 In the notebook folder a set of notebooks can be found to demonstrate how to use the magie package.
 
-The `FLO_live_data_wrapper.py` script in `notebooks/` downloads the latest raw X, Y and Z components from Florence Court variometer (FLO), supplied by the British Geological Survey (BGS). The script saves the most recent 24-hour FLO 1-second data in both tab-delimited MagIE format and IAGA-2002 format, and saves the latest 3-day timeseries as a PNG file. Contact BGS to obtain data download authorisation.
+The `FLO_live_data_wrapper.py` script in `notebooks/` downloads the latest raw X, Y and Z components from Florence Court variometer (FLO), supplied by the British Geological Survey (BGS). The script saves the most recent 24-hour FLO 1-second data in both tab-delimited MagIE format and IAGA-2002 format, and saves the latest 3-day timeseries as a PNG file. If individual daily IAGA-2002 files are provided instead, use `iaga2magie_xyzf` from `file_conversions.py` to convert data to MagIE txt file format. List of file Path for txt files can be obtained using `get_SAGE_filepaths`. Contact BGS to obtain data download authorisation.
 
 FLO is set up and operated by BGS. For more information, visit [SAGE variometer data page](https://intermagnet.bgs.ac.uk/research/SAGE/variometer_data.html?). Ownership and copyright of the FLO data is retained by UKRI.
 
