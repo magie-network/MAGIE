@@ -530,60 +530,6 @@ def get_SAGE_filepaths(base_dir, start_time=None, end_time=None,
     return all_file_path, start_time, end_time
 
 
-@enforce_types(obs=str, dir=pathlib.Path, fname=str)
-def iaga2magie_xyzf(obs, dir, fname):
-    """
-    Convert an IAGA-2002 formatted file to MagIE data format.
-
-    Reads an IAGA-2002 file with observatory-specific columns
-    OBSX, OBSY, OBSZ, OBSF then renames these columns to generic MagIE
-    column names, drops the DOY column, and adds a sequential index column.
-
-    Parameters
-    ----------
-    obs: str
-        Three-letter observatory code.
-    dir: pathlib.Path
-        Path folder where daily iaga-2002 day files live.
-    fname: str
-        File of the IAGA file:
-        FLO20260116.sec or FLO20260116vsec.sec.
-
-    Returns
-    -------
-    df: pandas.DataFrame
-        DataFrame with DateTimeIndex as "Date & Time", and columns:
-        Index#, Bx, B, Bz, Bf.
-
-    Raises
-    ------
-    KeyError:
-        If expected IAGA three-letter code not found in file,
-        suggest a mismatch between obs and the file's column headers.
-
-    Example
-    -------
-    >>> iaga2magie_xyzf("flo", iaga_dir, "flo20260911vsec.sec")
-    """
-    df = read_IAGA2002(dir, fname)
-    df.drop(columns=["DOY"], inplace=True)
-    df['Index#'] = range(1, len(df) + 1)
-    ob = obs.upper()
-    old_col_names = [f"{ob}{x}" for x in ("X", "Y", "Z", "F")]
-    missing_cols = [col for col in old_col_names if col not in df.columns]
-    if missing_cols:
-        raise KeyError(
-            f"Expected columns {missing_cols} not found in {fname}. "
-            f"Check obs code '{obs}' matches {fname}'s column headers."
-            )
-    new_col_names = ("Bx", "By", "Bz", "Bf")
-
-    df.rename(columns=dict(zip(old_col_names, new_col_names)), inplace=True)
-    cols = ('Index#', "Bx", "By", "Bz", "Bf")
-    df = df.reindex(columns=[c for c in cols if c in df.columns])
-    return df
-
-
 @enforce_types(dir=pathlib.Path, fname=str, print_header=bool)
 def read_IAGA2002(dir, fname, print_header=False):
     """
@@ -685,7 +631,7 @@ def generate_missing_day(
 
     Examples
     --------
-    >>> generate_missing_day(outputDir, "flo20260126.txt")
+    >>> generate_missing_day(base_dir, "flo20260126.txt")
     Generates placeholder file for 2026-01-26.
     """
     base_dir = Path(base_dir)
@@ -725,22 +671,3 @@ def generate_missing_day(
                 )
         if print_msg:
             print(f"Saved/updated: {out_path.name} in {target_dir}")
-
-
-if __name__ == '__main__':
-    obs = "val"
-    iaga_dir = Path(r'../../Data/')  # where the IAGA-2002 file is saved
-    magie_dir = Path(r'../../Data/')  # where you want the magie file saved
-    fname = "OBSYYYYMMDDvsec.sec"  # input IAGA-2002 file
-    out_name = "obsYYYYMMDD.txt"  # MagIE file name after iaga2magie_xyzf()
-    out_file = Path(magie_dir, out_name)
-    df_out = iaga2magie_xyzf(obs, iaga_dir, fname)
-    # save df_out DataFrame into tab-delimited MagIE format
-    with open(out_file, 'w') as f:
-        f.write("Date & Time\tIndex#\tBx\tBy\tBz\n")
-        for i, (ind, row) in enumerate(df_out.iterrows(), start=1):
-            dt_str = pd.Timestamp(ind).strftime("%Y-%m-%d %H:%M:%S")
-            f.write(
-                f"{dt_str}\t{i}\t"
-                f"{row['Bx']:.2f}\t{row['By']:.2f}\t{row['Bz']:.2f}\n"
-                )
