@@ -28,8 +28,9 @@ from __future__ import annotations
 
 import json
 import warnings
+from collections.abc import Mapping
 from dataclasses import dataclass
-from datetime import datetime
+from datetime import datetime, timedelta, timezone
 from html import escape
 from pathlib import Path
 from string import Template
@@ -44,7 +45,7 @@ from magie.email_utils import (
     load_recipients,
     send_html_email,
 )
-from magie.utils import enforce_types, get_site_metadata
+from magie.utils import enforce_types, get_site_metadata, tqdm_joblib
 
 @dataclass
 class SiteConfig:
@@ -102,6 +103,490 @@ class SiteConfig:
             elif interval_type == "1-minute":
                 self.assumed_data_frequency = "min"
 
+
+@dataclass
+class DayAvailability:
+    """
+    Availability summary for one site on one UTC day.
+    """
+
+    has_data: bool
+    latest: datetime | None
+    valid_samples: int
+    expected_samples: int | None
+    coverage_percent: float | None
+    data_frequency: str | None
+    source_file: str | None
+
+
+@enforce_types(value=(datetime, pd.Timestamp, str))
+def as_utc_datetime(value) -> datetime:
+    """
+    Return ``value`` as a timezone-aware UTC ``datetime``.
+    """
+
+    timestamp = utc_timestamp(value)
+    if timestamp is pd.NaT:
+        return timestamp
+    return timestamp.to_pydatetime()
+
+
+@enforce_types(value=(datetime, pd.Timestamp, str))
+def utc_archive_day(value) -> datetime:
+    """
+    Return midnight UTC for the UTC archive day containing ``value``.
+    """
+
+    timestamp = utc_timestamp(value)
+    if timestamp is pd.NaT:
+        return timestamp
+    timestamp = timestamp.normalize()
+    return timestamp.to_pydatetime()
+
+
+@enforce_types(value=(str, type(None)))
+def parse_lookup_datetime(value: str | None) -> datetime | None:
+    """
+    Parse an ISO datetime from the availability lookup as UTC.
+    """
+
+    if not value:
+        return None
+
+    try:
+        return as_utc_datetime(value)
+    except (TypeError, ValueError):
+        return None
+
+
+@enforce_types(site=SiteConfig, default_data_root=(str, Path, Mapping))
+def data_root_for_site(
+    site: SiteConfig,
+    default_data_root: Path | str | Mapping[str, Path | str],
+) -> Path:
+    """
+    Return the archive root to use for one site.
+    """
+
+    if site.data_root is not None:
+        return Path(site.data_root)
+
+    if isinstance(default_data_root, Mapping):
+        try:
+            return Path(default_data_root[site.code])
+        except KeyError as exc:
+            raise KeyError(
+                f"No data root configured for site {site.code!r}"
+            ) from exc
+
+    return Path(default_data_root)
+
+
+@enforce_types(data_root=(str, Path), site_code=str, day=(datetime, pd.Timestamp, str))
+def candidate_files_for_day(data_root: Path, site_code: str, day) -> list[Path]:
+    """
+    Return possible IAGA files for one site on one UTC archive day.
+    """
+
+    data_root = Path(data_root)
+    day = utc_archive_day(day)
+    ymd = day.strftime("%Y%m%d")
+    iaga_dir = data_root / day.strftime("%Y/%m/%d") / "iaga2002"
+
+    iaga_files = [
+        iaga_dir / f"{site_code}{ymd}psec.sec",
+        iaga_dir / f"{site_code}{ymd}pmin.min",
+    ]
+    iaga_files.extend(sorted(iaga_dir.glob(f"{site_code}{ymd}*sec.sec")))
+    iaga_files.extend(sorted(iaga_dir.glob(f"{site_code}{ymd}*min.min")))
+    return list(dict.fromkeys(iaga_files))
+
+
+@enforce_types(seconds=(int, float, np.number, type(None)))
+def frequency_from_seconds(seconds: float | None) -> tuple[str | None, int | None]:
+    """
+    Return a frequency label and expected daily sample count.
+    """
+
+    if seconds is None:
+        return None, None
+
+    if seconds <= 1.5:
+        return "sec", 24 * 60 * 60
+
+    if seconds <= 90:
+        return "min", 24 * 60
+
+    return f"{seconds:g}s", round((24 * 60 * 60) / seconds)
+
+
+@enforce_types(path=(str, Path))
+def frequency_from_path(path: Path) -> tuple[str | None, int | None]:
+    """
+    Infer cadence from a known magnetometer filename.
+    """
+
+    path = Path(path)
+    name = path.name.lower()
+    suffix = path.suffix.lower()
+
+    if "psec" in name or suffix == ".sec":
+        return "sec", 24 * 60 * 60
+
+    if "pmin" in name or suffix == ".min":
+        return "min", 24 * 60
+
+    return None, None
+
+
+@enforce_types(frequency=(str, type(None)))
+def expected_samples_from_frequency(frequency: str | None) -> int | None:
+    """
+    Return expected daily sample count for a configured frequency label.
+    """
+
+    if frequency is None:
+        return None
+
+    label = frequency.strip().lower()
+
+    if label in {"sec", "second", "seconds", "1-sec", "1-second"}:
+        return 24 * 60 * 60
+
+    if label in {"min", "minute", "minutes", "1-min", "1-minute"}:
+        return 24 * 60
+
+    return None
+
+
+@enforce_types(path=(str, Path), cadence_path=(str, Path, type(None)))
+def stream_availability(stream, path: Path, cadence_path: Path | None = None) -> DayAvailability:
+    """
+    Return valid-sample count, latest timestamp, and coverage for one stream.
+    """
+
+    path = Path(path)
+    cadence_path = Path(cadence_path) if cadence_path is not None else path
+
+    try:
+        times = np.asarray(stream["time"], dtype=object)
+        x = np.asarray(stream["x"], dtype=float)
+        y = np.asarray(stream["y"], dtype=float)
+        z = np.asarray(stream["z"], dtype=float)
+    except Exception:
+        return DayAvailability(False, None, 0, None, None, None, str(path))
+
+    if len(times) == 0:
+        return DayAvailability(False, None, 0, None, None, None, str(path))
+
+    valid = np.isfinite(x) | np.isfinite(y) | np.isfinite(z)
+    if not np.any(valid):
+        return DayAvailability(False, None, 0, None, None, None, str(path))
+
+    valid_times = []
+    for value in times[valid]:
+        try:
+            timestamp = utc_timestamp(value)
+        except (TypeError, ValueError):
+            continue
+        if timestamp is not pd.NaT:
+            valid_times.append(timestamp.to_pydatetime())
+
+    if not valid_times:
+        return DayAvailability(False, None, 0, None, None, None, str(path))
+
+    valid_times = sorted(set(valid_times))
+    latest = valid_times[-1]
+    valid_samples = len(valid_times)
+    cadence_seconds = None
+
+    if len(valid_times) > 1:
+        deltas = np.diff([value.timestamp() for value in valid_times])
+        positive_deltas = deltas[deltas > 0]
+        if len(positive_deltas) > 0:
+            cadence_seconds = float(np.median(positive_deltas))
+
+    data_frequency, expected_samples = frequency_from_seconds(cadence_seconds)
+    if expected_samples is None:
+        data_frequency, expected_samples = frequency_from_path(cadence_path)
+
+    coverage_percent = None
+    if expected_samples:
+        coverage_percent = round(
+            min(100.0, (valid_samples / expected_samples) * 100),
+            3,
+        )
+
+    return DayAvailability(
+        has_data=True,
+        latest=latest,
+        valid_samples=valid_samples,
+        expected_samples=expected_samples,
+        coverage_percent=coverage_percent,
+        data_frequency=data_frequency,
+        source_file=str(path),
+    )
+
+
+@enforce_types(candidate=DayAvailability, current=DayAvailability)
+def is_better_availability(
+    candidate: DayAvailability,
+    current: DayAvailability,
+) -> bool:
+    """
+    Return whether a candidate file is a better daily availability source.
+    """
+
+    if not candidate.has_data:
+        return False
+
+    if not current.has_data:
+        return True
+
+    if candidate.latest is not None and current.latest is None:
+        return True
+
+    if candidate.latest is None:
+        return False
+
+    if current.latest is not None:
+        if candidate.latest > current.latest:
+            return True
+        if candidate.latest < current.latest:
+            return False
+
+    candidate_coverage = candidate.coverage_percent
+    current_coverage = current.coverage_percent
+    if candidate_coverage is not None and current_coverage is None:
+        return True
+    if candidate_coverage is None:
+        return candidate.valid_samples > current.valid_samples
+
+    return candidate_coverage > current_coverage
+
+
+@enforce_types(site_code=str, day=(datetime, pd.Timestamp, str), data_root=(str, Path))
+def day_data_availability(site_code: str, day, data_root: Path) -> DayAvailability:
+    """
+    Return valid data availability for one site on one UTC day.
+    """
+
+    best = DayAvailability(False, None, 0, None, None, None, None)
+
+    for path in candidate_files_for_day(data_root, site_code, day):
+        if not path.exists():
+            continue
+
+        try:
+            stream = read(str(path))
+            availability = stream_availability(stream, path, cadence_path=path)
+        except Exception:
+            continue
+
+        if is_better_availability(availability, best):
+            best = availability
+
+    return best
+
+
+@enforce_types(site_code=str, data_root=(str, Path), day=(datetime, pd.Timestamp, str))
+def availability_job(site_code: str, data_root: Path, day) -> tuple[str, DayAvailability]:
+    """
+    Run one site/day availability check for parallel execution.
+    """
+
+    day = utc_archive_day(day)
+    return day.strftime("%Y-%m-%d"), day_data_availability(site_code, day, data_root)
+
+
+@enforce_types(site=SiteConfig, site_data_root=(str, Path), day=(datetime, pd.Timestamp, str))
+def site_availability_job(
+    site: SiteConfig,
+    site_data_root: Path,
+    day,
+) -> tuple[SiteConfig, str, DayAvailability]:
+    """
+    Run one site/day availability check and include the site in the result.
+    """
+
+    date_key, availability = availability_job(site.code, site_data_root, day)
+    return site, date_key, availability
+
+
+@enforce_types(
+    sites=list,
+    data_root=(str, Path, Mapping),
+    start_date=(datetime, pd.Timestamp, str),
+    end_date=(datetime, pd.Timestamp, str),
+    output_path=(str, Path),
+    parallel_jobs=int,
+    show_progress=bool,
+    update_existing=bool,
+)
+def build_availability_lookup(
+    sites,
+    data_root,
+    start_date,
+    end_date,
+    output_path,
+    parallel_jobs=1,
+    show_progress=True,
+    update_existing=False,
+):
+    """
+    Write daily availability JSON for a set of sites.
+
+    ``data_root`` may be one shared archive root or a dictionary mapping
+    normalised site codes to archive roots. A site's own ``data_root`` field
+    takes precedence over either form.
+    """
+
+    from joblib import Parallel, delayed
+
+    output_path = Path(output_path)
+    start_date = utc_archive_day(start_date)
+    end_date = utc_archive_day(end_date)
+
+    if update_existing and output_path.exists():
+        lookup = json.loads(output_path.read_text(encoding="utf-8"))
+        lookup.setdefault("stations", {})
+    else:
+        lookup = {
+            "generated_at": datetime.now(timezone.utc).isoformat(),
+            "stations": {},
+        }
+
+    lookup["generated_at"] = datetime.now(timezone.utc).isoformat()
+
+    days = []
+    day = start_date
+    while day <= end_date:
+        days.append(day)
+        day += timedelta(days=1)
+
+    jobs = [
+        (site, data_root_for_site(site, data_root), day)
+        for site in sites
+        for day in days
+    ]
+
+    if parallel_jobs == 1:
+        job_results = [
+            (site, *availability_job(site.code, site_data_root, day))
+            for site, site_data_root, day in jobs
+        ]
+    elif jobs:
+        with tqdm_joblib(
+            total=len(jobs),
+            desc_prefix="Checking magnetometer availability",
+            unit="day",
+            enabled=show_progress,
+        ):
+            job_results = Parallel(
+                n_jobs=parallel_jobs,
+                prefer="processes",
+                backend="loky",
+            )(
+                delayed(site_availability_job)(site, site_data_root, day)
+                for site, site_data_root, day in jobs
+            )
+    else:
+        job_results = []
+
+    results_by_site = {}
+    for site, date_key, availability in job_results:
+        results_by_site.setdefault(site.code, {"site": site, "dates": {}})
+        results_by_site[site.code]["dates"][date_key] = availability
+
+    for site in sites:
+        site_data_root = data_root_for_site(site, data_root)
+        station = lookup["stations"].get(site.code, {}) if update_existing else {}
+        available_dates = dict(station.get("available_dates", {}))
+        coverage_percent_by_date = dict(station.get("coverage_percent_by_date", {}))
+        data_frequency_by_date = dict(station.get("data_frequency_by_date", {}))
+        valid_samples_by_date = dict(station.get("valid_samples_by_date", {}))
+        expected_samples_by_date = dict(station.get("expected_samples_by_date", {}))
+        latest_valid_measurement_by_date = dict(
+            station.get("latest_valid_measurement_by_date", {})
+        )
+        source_file_by_date = dict(station.get("source_file_by_date", {}))
+        last_available_date = None
+        last_valid_measurement = None
+        date_results = results_by_site.get(site.code, {}).get("dates", {})
+
+        for day in days:
+            date_key = day.strftime("%Y-%m-%d")
+            availability = date_results.get(
+                date_key,
+                DayAvailability(False, None, 0, None, None, None, None),
+            )
+            previous_had_data = bool(available_dates.get(date_key))
+            previous_latest = parse_lookup_datetime(
+                latest_valid_measurement_by_date.get(date_key)
+            )
+            if update_existing and previous_had_data:
+                if availability.latest is None:
+                    continue
+                if previous_latest is not None and availability.latest < previous_latest:
+                    continue
+
+            data_frequency = availability.data_frequency or site.assumed_data_frequency
+            expected_samples = (
+                availability.expected_samples
+                or expected_samples_from_frequency(data_frequency)
+            )
+            coverage_percent = availability.coverage_percent
+            if coverage_percent is None and availability.has_data and expected_samples:
+                coverage_percent = round(
+                    min(100.0, (availability.valid_samples / expected_samples) * 100),
+                    3,
+                )
+            elif not availability.has_data:
+                coverage_percent = 0.0
+
+            available_dates[date_key] = availability.has_data
+            coverage_percent_by_date[date_key] = coverage_percent
+            data_frequency_by_date[date_key] = data_frequency
+            valid_samples_by_date[date_key] = availability.valid_samples
+            expected_samples_by_date[date_key] = expected_samples
+            latest_valid_measurement_by_date[date_key] = (
+                availability.latest.isoformat() if availability.latest else None
+            )
+            source_file_by_date[date_key] = availability.source_file
+
+        for date_key in sorted(available_dates):
+            if not available_dates[date_key]:
+                continue
+            last_available_date = date_key
+            last_valid_measurement = latest_valid_measurement_by_date.get(date_key)
+            if (
+                last_valid_measurement is None
+                and date_key == station.get("last_available_date")
+            ):
+                last_valid_measurement = station.get("last_valid_measurement")
+
+        if last_available_date is None:
+            last_available_date = station.get("last_available_date")
+            last_valid_measurement = station.get("last_valid_measurement")
+
+        lookup["stations"][site.code] = {
+            "name": site.name,
+            "data_root": str(site_data_root),
+            "active": site.active,
+            "permanently_off": site.permanently_off,
+            "last_available_date": last_available_date,
+            "last_valid_measurement": last_valid_measurement,
+            "available_dates": available_dates,
+            "coverage_percent_by_date": coverage_percent_by_date,
+            "data_frequency_by_date": data_frequency_by_date,
+            "valid_samples_by_date": valid_samples_by_date,
+            "expected_samples_by_date": expected_samples_by_date,
+            "latest_valid_measurement_by_date": latest_valid_measurement_by_date,
+            "source_file_by_date": source_file_by_date,
+        }
+
+    output_path.parent.mkdir(parents=True, exist_ok=True)
+    output_path.write_text(json.dumps(lookup, indent=2), encoding="utf-8")
 
 
 
