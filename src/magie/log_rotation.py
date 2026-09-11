@@ -23,10 +23,13 @@ from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from zipfile import ZIP_DEFLATED, ZipFile
 
+from magie.utils import enforce_types
+
 
 SUPPORTED_FREQUENCIES = {"daily", "weekly", "monthly"}
 
 
+@enforce_types(now=(datetime, type(None)))
 def _normalise_now(now: datetime | None) -> datetime:
     """
     Return an aware timestamp for naming and age comparisons.
@@ -42,6 +45,7 @@ def _normalise_now(now: datetime | None) -> datetime:
     return now
 
 
+@enforce_types(now=(datetime, type(None)), frequency=str)
 def period_start(now: datetime | None = None, frequency: str = "daily") -> datetime:
     """
     Return the start timestamp for a log-rotation period.
@@ -82,6 +86,7 @@ def period_start(now: datetime | None = None, frequency: str = "daily") -> datet
     raise ValueError(f"Unsupported frequency {frequency!r}. Expected one of: {supported}.")
 
 
+@enforce_types(frequency=str, now=(datetime, type(None)), archive_prefix=str)
 def rotation_archive_name(
     frequency: str,
     now: datetime | None = None,
@@ -117,6 +122,15 @@ def rotation_archive_name(
     return f"{archive_prefix}_{frequency}_{start:%Y-%m-%d}.zip"
 
 
+@enforce_types(
+    log_paths=list,
+    frequency=str,
+    archive_dir=(str, Path, type(None)),
+    now=(datetime, type(None)),
+    archive_prefix=str,
+    missing_ok=bool,
+    overwrite=bool,
+)
 def rotate_logs(
     log_paths: list[str | Path],
     frequency: str,
@@ -219,6 +233,12 @@ def rotate_logs(
     return archive_path
 
 
+@enforce_types(
+    archive_dir=(str, Path),
+    age=timedelta,
+    now=(datetime, type(None)),
+    pattern=str,
+)
 def delete_old_zipped_logs(
     archive_dir: str | Path,
     age: timedelta,
