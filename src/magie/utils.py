@@ -154,7 +154,7 @@ SITE_METADATA = {
         "data_interval_type" : "1-second",
         "data_type" : "variation",
         "comments" : None,
-        "k9_threshold": "unknown",
+        "k9_threshold": 540,
     },
 }
 
