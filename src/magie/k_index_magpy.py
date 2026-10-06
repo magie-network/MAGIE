@@ -30,6 +30,13 @@ from magie.file_conversions import (
     magie2iaga2002,
 )
 from magie.utils import enforce_types, get_asset_path, get_site_metadata, tqdm_joblib
+from magie.utils import (
+    as_utc_naive_timestamp,
+    iaga_archive_day,
+    iaga_date_tokens,
+    iaga_file_candidates,
+    path_prefix_join,
+)
 
 
 def _as_utc_naive_timestamp(value):
@@ -37,10 +44,7 @@ def _as_utc_naive_timestamp(value):
     Convert timezone-aware timestamps to UTC while preserving naive UTC inputs.
     """
 
-    timestamp = pd.Timestamp(value)
-    if timestamp.tzinfo is None:
-        return timestamp
-    return timestamp.tz_convert("UTC").tz_localize(None)
+    return as_utc_naive_timestamp(value)
 
 
 def _utc_day(value):
@@ -48,17 +52,15 @@ def _utc_day(value):
     Return the UTC archive day for a datetime-like value.
     """
 
-    return _as_utc_naive_timestamp(value).floor("1D")
+    return iaga_archive_day(value)
 
 
 def _date_tokens(date):
-    return _utc_day(date).strftime("%Y-%m-%d").split("-")
+    return iaga_date_tokens(date)
 
 
 def _path_prefix_join(path_prefix, *parts):
-    if path_prefix.startswith("http"):
-        return path_prefix.rstrip("/") + "/" + "/".join(parts)
-    return str(Path(path_prefix).joinpath(*parts))
+    return path_prefix_join(path_prefix, *parts)
 
 
 def _read_text_source(path_or_url):
@@ -69,17 +71,16 @@ def _read_text_source(path_or_url):
 
 
 def _iaga_file_candidates(date, site_code, path_prefix):
-    year, month, day = _date_tokens(date)
-    yyyymmdd = f"{year}{month}{day}"
-    folder = _path_prefix_join(path_prefix, year, month, day, "iaga2002")
-    if path_prefix.startswith("http"):
-        return [
-            f"{folder}/{site_code}{yyyymmdd}psec.sec",
-            f"{folder}/{site_code}{yyyymmdd}pmin.min",
-        ]
-
-    pattern = str(Path(folder) / f"{site_code}{yyyymmdd}*")
-    return sorted(glob(pattern))
+    return [
+        str(path)
+        for path in iaga_file_candidates(
+            date,
+            site_code,
+            path_prefix,
+            data_types=("p",),
+            intervals=("sec", "min"),
+        )
+    ]
 
 
 def _get_iaga_path(date, site_code, path_prefix):
