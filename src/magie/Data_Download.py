@@ -10,12 +10,18 @@ from io import StringIO
 from magie.Filename_tools import date2filename
 import warnings
 import sys
+import tempfile
 from urllib.request import urlretrieve
 from pandas.errors import ParserError
-from magie.utils import validinput, enforce_types
+from magie.utils import (
+    as_utc_naive_timestamp,
+    enforce_types,
+    iaga_archive_dates,
+    iaga_file_candidates,
+    validinput,
+)
 from magie.file_conversions import _normalise_legacy_date_utc
 from tqdm import tqdm
-from dotenv import load_dotenv
 from pathlib import Path
 import datetime
 
@@ -98,8 +104,9 @@ def download(url, file_name):
 @enforce_types(
     url=str,
     filename=str,
+    timeout=(int, float, type(None)),
 )
-def exists_check(url, filename):
+def exists_check(url, filename, timeout=30):
     """
     Checks if the url exists .
 
@@ -107,10 +114,184 @@ def exists_check(url, filename):
     :param file_name: file_name and path of where to save the downloaded file.
     """
     try:
-        return requests.get(f"{url}{filename}").status_code
+        return requests.get(f"{url}{filename}", timeout=timeout).status_code
     except requests.exceptions.ConnectionError:
         time.sleep(1)
-        return exists_check(url, filename)
+        return exists_check(url, filename, timeout=timeout)
+
+
+def _download_one_iaga_file(
+    day,
+    site_code,
+    output_dir,
+    path_prefix,
+    data_types,
+    intervals,
+    request_timeout,
+):
+    """
+    Download the first available IAGA file for one UTC day.
+
+    Returns
+    -------
+    pathlib.Path or None
+        Local path to the downloaded or pre-existing file, or ``None`` if none
+        of the candidate files exists remotely.
+    """
+    output_dir = Path(output_dir)
+    output_dir.mkdir(parents=True, exist_ok=True)
+
+    for remote_path in iaga_file_candidates(
+        day,
+        site_code,
+        path_prefix,
+        data_types=data_types,
+        intervals=intervals,
+        include_local_glob=False,
+    ):
+        filename = Path(remote_path).name
+        local_path = output_dir / filename
+        if local_path.exists():
+            return local_path
+        url = str(remote_path).rsplit("/", 1)[0] + "/"
+        if exists_check(url, filename, timeout=request_timeout) >= 400:
+            continue
+        download(str(remote_path), str(local_path))
+        return local_path
+
+    return None
+
+
+def _trim_datastream_to_range(data, start, end):
+    """Trim a MagPy DataStream when the installed MagPy version supports it."""
+    try:
+        trimmed = data.trim(
+            starttime=start.to_pydatetime(),
+            endtime=end.to_pydatetime(),
+            include=True,
+        )
+    except AttributeError:
+        warnings.warn(
+            "Installed MagPy DataStream has no trim method; returning full "
+            "daily files.",
+            UserWarning,
+        )
+        return data
+    except TypeError:
+        trimmed = data.trim(start.to_pydatetime(), end.to_pydatetime())
+
+    return data if trimmed is None else trimmed
+
+
+@enforce_types(
+    site_code=str,
+    save=bool,
+    save_dir=(str, Path),
+    path_prefix=str,
+    data_types=(tuple, list),
+    intervals=(tuple, list),
+    n_jobs=int,
+    trim=bool,
+    request_timeout=(int, float, type(None)),
+)
+def download_iaga2002(
+    start,
+    end,
+    site_code,
+    save=True,
+    save_dir="./",
+    path_prefix="https://data.magie.ie/",
+    data_types=("p",),
+    intervals=("sec", "min"),
+    n_jobs=-1,
+    trim=True,
+    request_timeout=30,
+):
+    """
+    Download IAGA-2002 files for one MAGIE site and return a MagPy DataStream.
+
+    Parameters
+    ----------
+    start, end : datetime-like
+        Inclusive time range to download. Archive days are resolved in UTC.
+    site_code : str
+        Three-letter site code, for example ``"dun"`` or ``"val"``.
+    save : bool, optional
+        If ``True``, keep downloaded IAGA files in ``save_dir``. If ``False``,
+        use a temporary directory and remove files after reading.
+    save_dir : str or pathlib.Path, optional
+        Directory where IAGA files are saved when ``save=True``. Defaults to
+        the current working directory.
+    path_prefix : str, optional
+        MAGIE archive root URL. Defaults to ``"https://data.magie.ie/"``.
+    data_types : tuple or list of str, optional
+        IAGA filename type-code priority. Defaults to provisional files
+        ``("p",)``. Common alternatives include ``"v"``, ``"q"``, and ``"d"``.
+    intervals : tuple or list of str, optional
+        IAGA interval priority. Defaults to ``("sec", "min")``.
+    n_jobs : int, optional
+        Number of parallel download workers passed to joblib. The default
+        ``-1`` uses all available workers.
+    trim : bool, optional
+        If ``True``, trim the joined stream to the exact start/end time when
+        the installed MagPy version supports ``DataStream.trim``.
+    request_timeout : int, float, or None, optional
+        Timeout in seconds for remote file-existence checks.
+
+    Returns
+    -------
+    magpy.stream.DataStream
+        Joined MagPy stream containing all downloaded days.
+
+    Raises
+    ------
+    FileNotFoundError
+        If no IAGA files are found for the requested range.
+    ImportError
+        If MagPy is not installed.
+    """
+    from joblib import Parallel, delayed
+    from magpy.stream import DataStream, join_streams, read
+
+    start_ts = as_utc_naive_timestamp(start)
+    end_ts = as_utc_naive_timestamp(end)
+    days = iaga_archive_dates(start_ts, end_ts)
+    data_types = tuple(data_type.lower() for data_type in data_types)
+    intervals = tuple(interval.lower() for interval in intervals)
+
+    def read_downloads(output_dir):
+        paths = Parallel(n_jobs=n_jobs, prefer="threads")(
+            delayed(_download_one_iaga_file)(
+                day,
+                site_code,
+                output_dir,
+                path_prefix,
+                data_types,
+                intervals,
+                request_timeout,
+            )
+            for day in days
+        )
+        paths = [path for path in paths if path is not None]
+        if not paths:
+            raise FileNotFoundError(
+                f"No IAGA-2002 files found for site {site_code!r} between "
+                f"{start_ts} and {end_ts} under {path_prefix!r}."
+            )
+
+        data = DataStream()
+        for path in sorted(paths):
+            data = join_streams(data, read(str(path)))
+
+        if trim:
+            data = _trim_datastream_to_range(data, start_ts, end_ts)
+        return data
+
+    if save:
+        return read_downloads(Path(save_dir))
+
+    with tempfile.TemporaryDirectory(prefix="magie_iaga2002_") as tmpdir:
+        return read_downloads(Path(tmpdir))
 
 
 @enforce_types(
@@ -538,6 +719,7 @@ def get_SAGE_variometer(passwordDir, printHeader=False):
     -------
         df = get_SAGE_variometer(passwordDir)
     """
+    from dotenv import load_dotenv
     url = "https://geomag.bgs.ac.uk/SpaceWeather/fl_24hrdata.out"
     load_dotenv(os.path.join(passwordDir, ".env"))
     username = os.getenv("username")

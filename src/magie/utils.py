@@ -7,6 +7,7 @@ from pathlib import Path
 from collections.abc import Callable
 from tqdm import tqdm
 import importlib.resources as importlib_resources
+import pandas as pd
 
 def enforce_types(**type_map):
     """
@@ -52,6 +53,106 @@ def enforce_types(**type_map):
         return wrapper
 
     return decorator
+
+
+def as_utc_naive_timestamp(value):
+    """
+    Convert datetime-like values to UTC while preserving naive UTC inputs.
+    """
+
+    timestamp = pd.Timestamp(value)
+    if timestamp.tzinfo is None:
+        return timestamp
+    return timestamp.tz_convert("UTC").tz_localize(None)
+
+
+def iaga_archive_day(value):
+    """
+    Return the UTC archive day for a datetime-like value.
+    """
+
+    return as_utc_naive_timestamp(value).floor("1D")
+
+
+def iaga_archive_dates(start, end):
+    """
+    Return UTC archive days covering the inclusive start/end range.
+    """
+
+    start = as_utc_naive_timestamp(start)
+    end = as_utc_naive_timestamp(end)
+    if end < start:
+        raise ValueError("end must be greater than or equal to start")
+    return pd.date_range(start.floor("1D"), end.floor("1D"), freq="1D")
+
+
+def iaga_date_tokens(value):
+    """
+    Return ``[YYYY, MM, DD]`` tokens for the UTC IAGA archive day.
+    """
+
+    return iaga_archive_day(value).strftime("%Y-%m-%d").split("-")
+
+
+def path_prefix_join(path_prefix, *parts):
+    """
+    Join archive path components for either local paths or HTTP URL prefixes.
+    """
+
+    if str(path_prefix).startswith("http"):
+        return str(path_prefix).rstrip("/") + "/" + "/".join(parts)
+    return str(Path(path_prefix).joinpath(*parts))
+
+
+def iaga_filename_candidates(day, site_code, data_types=("p",), intervals=("sec", "min")):
+    """
+    Return possible IAGA-2002 filenames for one site on one UTC archive day.
+    """
+
+    day = iaga_archive_day(day)
+    ymd = day.strftime("%Y%m%d")
+    site = site_code.lower()
+    return [
+        f"{site}{ymd}{data_type.lower()}{interval.lower()}.{interval.lower()}"
+        for data_type in data_types
+        for interval in intervals
+    ]
+
+
+def iaga_file_candidates(
+    day,
+    site_code,
+    path_prefix,
+    data_types=("p",),
+    intervals=("sec", "min"),
+    include_local_glob=True,
+):
+    """
+    Return candidate IAGA-2002 paths or URLs for one site on one UTC day.
+    """
+
+    year, month, day_token = iaga_date_tokens(day)
+    folder = path_prefix_join(path_prefix, year, month, day_token, "iaga2002")
+    filenames = iaga_filename_candidates(
+        f"{year}-{month}-{day_token}",
+        site_code,
+        data_types=data_types,
+        intervals=intervals,
+    )
+
+    if str(path_prefix).startswith("http"):
+        return [f"{folder}/{filename}" for filename in filenames]
+
+    paths = [Path(folder) / filename for filename in filenames]
+    if include_local_glob:
+        ymd = f"{year}{month}{day_token}"
+        for interval in intervals:
+            interval = interval.lower()
+            paths.extend(sorted(Path(folder).glob(
+                f"{site_code.lower()}{ymd}*{interval}.{interval}"
+            )))
+    return list(dict.fromkeys(paths))
+
 
 _FLO_COMMENTS_ = (
     " This data file was created by the BGS geomagnetic data processing ",

@@ -45,7 +45,12 @@ from magie.email_utils import (
     load_recipients,
     send_html_email,
 )
-from magie.utils import enforce_types, get_site_metadata, tqdm_joblib
+from magie.utils import (
+    enforce_types,
+    get_site_metadata,
+    iaga_file_candidates,
+    tqdm_joblib,
+)
 
 @dataclass
 class SiteConfig:
@@ -188,18 +193,13 @@ def candidate_files_for_day(data_root: Path, site_code: str, day) -> list[Path]:
     Return possible IAGA files for one site on one UTC archive day.
     """
 
-    data_root = Path(data_root)
-    day = utc_archive_day(day)
-    ymd = day.strftime("%Y%m%d")
-    iaga_dir = data_root / day.strftime("%Y/%m/%d") / "iaga2002"
-
-    iaga_files = [
-        iaga_dir / f"{site_code}{ymd}psec.sec",
-        iaga_dir / f"{site_code}{ymd}pmin.min",
-    ]
-    iaga_files.extend(sorted(iaga_dir.glob(f"{site_code}{ymd}*sec.sec")))
-    iaga_files.extend(sorted(iaga_dir.glob(f"{site_code}{ymd}*min.min")))
-    return list(dict.fromkeys(iaga_files))
+    return iaga_file_candidates(
+        day,
+        site_code,
+        data_root,
+        data_types=("p",),
+        intervals=("sec", "min"),
+    )
 
 
 @enforce_types(seconds=(int, float, np.number, type(None)))
