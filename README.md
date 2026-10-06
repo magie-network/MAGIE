@@ -8,17 +8,17 @@ conda create -n magie python=3.12 # important to not use later python versions i
 
 conda activate magie
 
-pip install "git+https://github.com/magie-network/MAGIE.git@3.3.3"
+pip install "git+https://github.com/magie-network/MAGIE.git@3.3.4"
 
 For alert support with `pip`, install the `alerts` extra:
 
-pip install "magie[alerts] @ git+https://github.com/magie-network/MAGIE.git@3.3.3"
+pip install "magie[alerts] @ git+https://github.com/magie-network/MAGIE.git@3.3.4"
 
 This will install mastodon for mastodon alerts
 
 For magnetometer monitor map support with `pip`, install the `monitor` extra:
 
-pip install "magie[monitor] @ git+https://github.com/magie-network/MAGIE.git@3.3.3"
+pip install "magie[monitor] @ git+https://github.com/magie-network/MAGIE.git@3.3.4"
 
 This will install Plotly and secsy for the magnetometer status map tools.
 
