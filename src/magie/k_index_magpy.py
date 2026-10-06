@@ -71,16 +71,16 @@ def _read_text_source(path_or_url):
 
 
 def _iaga_file_candidates(date, site_code, path_prefix):
-    return [
-        str(path)
-        for path in iaga_file_candidates(
-            date,
-            site_code,
-            path_prefix,
-            data_types=("p",),
-            intervals=("sec", "min"),
-        )
-    ]
+    candidates = iaga_file_candidates(
+        date,
+        site_code,
+        path_prefix,
+        data_types=("p",),
+        intervals=("sec", "min"),
+    )
+    if str(path_prefix).startswith("http"):
+        return [str(path) for path in candidates]
+    return [str(path) for path in candidates if Path(path).exists()]
 
 
 def _get_iaga_path(date, site_code, path_prefix):
@@ -614,9 +614,14 @@ def plot_k(K_data, logo_path=None, auto_xlim=True, colorbar=True, show_logo=Fals
     ax.tick_params(axis='x', which='minor', labelrotation=0, pad=2)
     # ax.minorticks_on(axis='x')
     # ax.spines[['top', 'right']].set_visible(False)
-    xmin, xmax= np.array(K_data['time']).astype('datetime64[D]').min()+np.timedelta64(1, 'D'), np.array(K_data['time']).astype('datetime64[D]').max()+np.timedelta64(1, 'D')
+    k_days = np.array(K_data['time']).astype('datetime64[D]')
+    xmin = k_days.min() + np.timedelta64(1, 'D')
+    xmax = k_days.max() + np.timedelta64(1, 'D')
+    if xmin >= xmax:
+        xmin = k_days.min()
+        xmax = k_days.min() + np.timedelta64(1, 'D')
     if auto_xlim :
-        ax.set_xlim(np.array(K_data['time']).astype('datetime64[D]').min()+np.timedelta64(1, 'D'), np.array(K_data['time']).astype('datetime64[D]').max()+np.timedelta64(1, 'D'))
+        ax.set_xlim(xmin, xmax)
     # Emphasize day boundaries over the six-hour minor grid.
     for t in np.arange(xmin, xmax-np.timedelta64(1, 'D'), np.timedelta64(1, 'D')) +np.timedelta64(1, 'D'):
         ax.axvline(t, color='black', zorder=10)
