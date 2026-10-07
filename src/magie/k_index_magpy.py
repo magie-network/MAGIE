@@ -19,6 +19,7 @@ from magpy.stream import DataStream, read, join_streams
 import matplotlib.dates as mdates
 from matplotlib.colors import BoundaryNorm, ListedColormap
 from matplotlib.offsetbox import AnnotationBbox, OffsetImage
+from matplotlib.ticker import NullFormatter
 
 from magie.file_conversions import (
     _format_iaga_component_series,
@@ -447,42 +448,54 @@ def live_k(now_time, site_code, path_prefix='https://data.magie.ie/', site_metad
     now_time = _as_utc_naive_timestamp(now_time)
     start_time = now_time.floor('1D')-pd.Timedelta(4, 'D')
     end_time = now_time.floor('1D') + pd.Timedelta(1, 'D')
-    if path_prefix.startswith("http"):
-        raise ValueError(
-            "live_k now expects a local archive path_prefix when "
-            "file_format='iaga2002'. Run the live IAGA updater first, then "
-            "read from the local iaga2002 archive."
-        )
     data = DataStream()
     counter = 0
     padding_sampling_step_seconds = None
-    for date in np.arange(start_time, end_time, np.timedelta64(1, 'D')):
-        try:
-            if file_format.lower() in {"txt", "legacy"}:
-                iaga_text, filename = _get_live(
-                    date,
-                    site_code,
-                    path_prefix=path_prefix,
-                    file_format="txt",
-                )
-                padding_sampling_step_seconds = _sampling_step_seconds_from_header(iaga_text)
-                output_dir = Path(_path_prefix_join(path_prefix, *_date_tokens(date), "iaga2002"))
-                output_dir.mkdir(parents=True, exist_ok=True)
-                iaga_path = output_dir / filename
-                iaga_path.write_text(iaga_text, encoding="utf-8")
-            else:
-                iaga_path = Path(_get_iaga_path(date, site_code, path_prefix))
-        except FileNotFoundError as e:
-            print(f"File not found for date {date}: {e}")
-            continue
+    file_format = file_format.lower()
+    if path_prefix.startswith("http") and file_format in {"iaga", "iaga2002"}:
+        from magie.Data_Download import download_iaga2002
 
-        stream = read(str(iaga_path))
-        if padding_sampling_step_seconds is None:
-            sampling_rate = stream.samplingrate()
-            if sampling_rate and sampling_rate > 0:
-                padding_sampling_step_seconds = sampling_rate
-        data = join_streams(data, stream)
-        counter += 1
+        data = download_iaga2002(
+            start_time,
+            end_time - pd.Timedelta(seconds=1),
+            site_code,
+            save=False,
+            path_prefix=path_prefix,
+            n_jobs=-1,
+            trim=False,
+        )
+        counter = 1
+        sampling_rate = data.samplingrate()
+        if sampling_rate and sampling_rate > 0:
+            padding_sampling_step_seconds = sampling_rate
+    else:
+        for date in np.arange(start_time, end_time, np.timedelta64(1, 'D')):
+            try:
+                if file_format in {"txt", "legacy"}:
+                    iaga_text, filename = _get_live(
+                        date,
+                        site_code,
+                        path_prefix=path_prefix,
+                        file_format="txt",
+                    )
+                    padding_sampling_step_seconds = _sampling_step_seconds_from_header(iaga_text)
+                    output_dir = Path(_path_prefix_join(path_prefix, *_date_tokens(date), "iaga2002"))
+                    output_dir.mkdir(parents=True, exist_ok=True)
+                    iaga_path = output_dir / filename
+                    iaga_path.write_text(iaga_text, encoding="utf-8")
+                else:
+                    iaga_path = Path(_get_iaga_path(date, site_code, path_prefix))
+            except FileNotFoundError as e:
+                print(f"File not found for date {date}: {e}")
+                continue
+
+            stream = read(str(iaga_path))
+            if padding_sampling_step_seconds is None:
+                sampling_rate = stream.samplingrate()
+                if sampling_rate and sampling_rate > 0:
+                    padding_sampling_step_seconds = sampling_rate
+            data = join_streams(data, stream)
+            counter += 1
 
     if not counter:
         raise FileNotFoundError(
@@ -503,7 +516,10 @@ def live_k(now_time, site_code, path_prefix='https://data.magie.ie/', site_metad
         
     data = act.K_fmi(data, K9_limit=site_metadata['k9_threshold'], longitude=site_metadata['geodetic_longitude'], step_size=60)
     data['var1']= np.where(data['var1']>=0, data['var1'], np.nan)
-    return data.trim(starttime=(start_time + pd.Timedelta(45, 'h')).to_numpy(), endtime=(now_time+pd.Timedelta(1, 'D')).floor('1D').to_numpy())
+    data = data.trim(starttime=(start_time + pd.Timedelta(45, 'h')).to_numpy(), endtime=(now_time+pd.Timedelta(1, 'D')).floor('1D').to_numpy())
+    data.header["plot_k_xlim_start"] = (start_time + pd.Timedelta(2, "D")).floor("1D").to_pydatetime()
+    data.header["plot_k_xlim_end"] = (now_time + pd.Timedelta(1, "D")).floor("1D").to_pydatetime()
+    return data
 
 @enforce_types(
     K_data=(DataStream, pd.DataFrame),
@@ -542,11 +558,19 @@ def plot_k(K_data, logo_path=None, auto_xlim=True, colorbar=True, show_logo=Fals
     >>> df = pd.DataFrame({'time': idx, 'var1': [1, 2, 3, 4]})
     >>> fig, ax, cax = plot_k(df)
     """
+    xlim_start = None
+    xlim_end = None
+    for metadata in (getattr(K_data, "attrs", None), getattr(K_data, "header", None)):
+        if metadata is None:
+            continue
+        xlim_start = xlim_start or metadata.get("plot_k_xlim_start")
+        xlim_end = xlim_end or metadata.get("plot_k_xlim_end")
+
     K_data = K_data.copy()  # avoid mutating caller data
     # K_data["K_index"] = K_data["K_index"].replace(0, 0.2)  # lift zeros for visibility
     fig= plt.figure(figsize=(900/96, 400/96))
     if colorbar:
-        gs= fig.add_gridspec(2, 1, height_ratios=[1, .1], hspace=0.2)
+        gs= fig.add_gridspec(2, 1, height_ratios=[1, .18], hspace=0.32)
         cax= fig.add_subplot(gs[1, 0])
     else:
         gs= fig.add_gridspec(1, 1)
@@ -597,8 +621,22 @@ def plot_k(K_data, logo_path=None, auto_xlim=True, colorbar=True, show_logo=Fals
                     # ticks=[1, 3, 4.5, 5.5, 7, 9.0],
                     )
         cbar.ax.set_xticks([])
-        for x, t in zip([1, 3, 4.5, 5.5, 7, 9.0], ['Quiet\n0-1', 'Unsettled\n2-3', 'Active\n4', 'Minor Storm\n5', 'Major Storm\n6-7', 'Severe Storm\n8-9']):
-            cax.text(x, .5, t, fontsize=20, verticalalignment='center', ha='center', bbox=dict(facecolor='white', alpha=0.5))
+        cbar.outline.set_linewidth(0.8)
+        cax.set_ylim(0, 1)
+        for x, t in zip(
+            [1, 3, 4.5, 5.5, 7, 9.0],
+            ['Quiet\n0-1', 'Unsettled\n2-3', 'Active\n4', 'Minor\nStorm\n5', 'Major\nStorm\n6-7', 'Severe\nStorm\n8-9'],
+        ):
+            cax.text(
+                x,
+                .5,
+                t,
+                fontsize=9,
+                linespacing=0.9,
+                verticalalignment='center',
+                ha='center',
+                bbox=dict(facecolor='white', edgecolor='none', alpha=0.55, pad=1.5),
+            )
 
     ax.xaxis.set_major_locator(
         mdates.HourLocator(byhour=[11])  # noon
@@ -614,12 +652,21 @@ def plot_k(K_data, logo_path=None, auto_xlim=True, colorbar=True, show_logo=Fals
     ax.tick_params(axis='x', which='minor', labelrotation=0, pad=2)
     # ax.minorticks_on(axis='x')
     # ax.spines[['top', 'right']].set_visible(False)
-    k_days = np.array(K_data['time']).astype('datetime64[D]')
-    xmin = k_days.min() + np.timedelta64(1, 'D')
+    k_times = np.array(K_data['time'])
+    k_values = np.asarray(K_data['var1'], dtype=float)
+    valid_k = np.isfinite(k_values) & (k_values >= 0)
+    xlim_times = k_times[valid_k] if valid_k.any() else k_times
+    k_days = (xlim_times.astype('datetime64[ns]') + np.timedelta64(90, 'm')).astype('datetime64[D]')
+    xmin = k_days.min()
     xmax = k_days.max() + np.timedelta64(1, 'D')
-    if xmin >= xmax:
-        xmin = k_days.min()
-        xmax = k_days.min() + np.timedelta64(1, 'D')
+    if xlim_start is not None and xlim_end is not None:
+        xmin = np.datetime64(pd.Timestamp(xlim_start).to_datetime64())
+        xmax = np.datetime64(pd.Timestamp(xlim_end).to_datetime64())
+    xlim_days = (xmax - xmin) / np.timedelta64(1, 'D')
+    if xlim_start is None and xlim_end is None and xlim_days > 3:
+        ax.xaxis.set_major_locator(mdates.DayLocator())
+        ax.xaxis.set_minor_locator(mdates.HourLocator(byhour=[6, 12, 18]))
+        ax.xaxis.set_minor_formatter(NullFormatter())
     if auto_xlim :
         ax.set_xlim(xmin, xmax)
     # Emphasize day boundaries over the six-hour minor grid.
