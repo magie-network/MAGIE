@@ -1,8 +1,17 @@
+"""Calculate and plot local K indices with MagPy's FMI algorithm.
+
+Live and archive workflows load IAGA-2002 data, filter to minute cadence, and
+store K values in the MagPy ``var1`` column. Archive dates use UTC; naive
+timestamps are treated as UTC and aware timestamps are converted to UTC.
+Arguments are checked at runtime with :func:`magie.utils.enforce_types`.
+"""
+
 import os
 import re
 import traceback
 from collections.abc import Callable
 from contextlib import redirect_stderr, redirect_stdout
+from datetime import date as calendar_date, datetime
 from glob import glob
 from io import StringIO
 from pathlib import Path
@@ -40,6 +49,11 @@ from magie.utils import (
 )
 
 
+# Shared helpers accept explicit calendar values as well as NumPy/Pandas times.
+_TIME_TYPES = (str, calendar_date, datetime, pd.Timestamp, np.datetime64)
+
+
+@enforce_types(value=_TIME_TYPES)
 def _as_utc_naive_timestamp(value):
     """
     Convert timezone-aware timestamps to UTC while preserving naive UTC inputs.
@@ -48,6 +62,7 @@ def _as_utc_naive_timestamp(value):
     return as_utc_naive_timestamp(value)
 
 
+@enforce_types(value=_TIME_TYPES)
 def _utc_day(value):
     """
     Return the UTC archive day for a datetime-like value.
@@ -56,22 +71,34 @@ def _utc_day(value):
     return iaga_archive_day(value)
 
 
+@enforce_types(date=_TIME_TYPES)
 def _date_tokens(date):
+    """Return ``[YYYY, MM, DD]`` strings for the UTC archive day."""
     return iaga_date_tokens(date)
 
 
+@enforce_types(path_prefix=(str, Path), parts=tuple)
 def _path_prefix_join(path_prefix, *parts):
+    """Join string path components under a local root or HTTP URL prefix."""
     return path_prefix_join(path_prefix, *parts)
 
 
+@enforce_types(path_or_url=str)
 def _read_text_source(path_or_url):
+    """Read UTF-8 text from a local filename or HTTP URL, propagating I/O errors."""
     if path_or_url.startswith("http"):
         with urlopen(path_or_url) as response:
             return response.read().decode("utf-8")
     return Path(path_or_url).read_text(encoding="utf-8")
 
 
+@enforce_types(date=_TIME_TYPES, site_code=str, path_prefix=(str, Path))
 def _iaga_file_candidates(date, site_code, path_prefix):
+    """Return candidate path strings for second- and minute-cadence IAGA files.
+
+    Local candidates must exist; remote candidates are returned without probing
+    the server so the caller can try each URL in order.
+    """
     candidates = iaga_file_candidates(
         date,
         site_code,
@@ -84,7 +111,9 @@ def _iaga_file_candidates(date, site_code, path_prefix):
     return [str(path) for path in candidates if Path(path).exists()]
 
 
+@enforce_types(date=_TIME_TYPES, site_code=str, path_prefix=(str, Path))
 def _get_iaga_path(date, site_code, path_prefix):
+    """Return the first candidate path, raising ``FileNotFoundError`` if absent."""
     candidates = _iaga_file_candidates(date, site_code, path_prefix)
     if not candidates:
         raise FileNotFoundError(
@@ -94,7 +123,30 @@ def _get_iaga_path(date, site_code, path_prefix):
     return candidates[0]
 
 
+@enforce_types(
+    start_time=_TIME_TYPES,
+    site_code=str,
+    sampling_step_seconds=(int, float, np.number, type(None)),
+)
 def _empty_padding_stream(start_time, site_code, sampling_step_seconds=60):
+    """
+    Build two days of missing XYZF samples for the live FMI calculation.
+
+    Parameters
+    ----------
+    start_time : str, datetime.date, datetime.datetime, pandas.Timestamp or numpy.datetime64
+        First padding sample. Live callers pass a naive UTC timestamp.
+    site_code : str
+        Station identifier stored in the stream header in uppercase.
+    sampling_step_seconds : int, float, numpy.number or None, optional
+        Padding cadence in seconds. Defaults to 60 for ``None`` or nonpositive
+        values; the upper boundary at ``start_time + 2 days`` is excluded.
+
+    Returns
+    -------
+    magpy.stream.DataStream
+        Timestamps and NaN values for ``x``, ``y``, ``z`` and ``f``.
+    """
     start_time = pd.Timestamp(start_time)
     if sampling_step_seconds is None or sampling_step_seconds <= 0:
         sampling_step_seconds = 60
@@ -227,13 +279,41 @@ def build_empty_iaga_window(
     sampling_step_seconds=60,
 ):
     """
-    Create an in-memory IAGA-2002 file filled with missing values from
-    start_time to start_time + 1 day.
+    Create two days of IAGA-2002 text filled with missing magnetic values.
+
+    Parameters
+    ----------
+    start_time : str, pandas.Timestamp or numpy.datetime64
+        First sample; the boundary at ``start_time + 2 days`` is excluded.
+    source_of_data : str, optional
+        Organization recorded in the Source of Data header.
+    station_name : str, optional
+        Human-readable station name.
+    iaga_code : str, optional
+        Station code, uppercased and truncated to three characters.
+    geodetic_latitude, geodetic_longitude : int, float, str, numpy.number or None, optional
+        Station coordinates in degrees, or missing header values.
+    elevation : int, float, str, numpy.number or None, optional
+        Station elevation in metres, or a missing header value.
+    reported, sensor_orientation : str, optional
+        Reported component order and sensor orientation; both default to XYZF.
+        Unrecognized reported components also receive missing values.
+    digital_sampling, data_interval_type : str or None, optional
+        Header labels inferred from the cadence when omitted.
+    data_type : str, optional
+        Publication status used in the header and filename.
+    publication_date : str or None, optional
+        Optional Publication date header value.
+    comments : list, tuple or None, optional
+        Header comment strings. ``None`` inserts the default HDI definitions.
+    sampling_step_seconds : int, float, numpy.number or None, optional
+        Positive sample cadence in seconds. ``None`` uses 60 seconds.
 
     Returns
     -------
     tuple[str, str]
-        The full IAGA-2002 file contents and a recommended output filename.
+        Full IAGA-2002 text using the 999999.00 missing marker and a suggested
+        filename containing ``_empty`` after the station code. No file is saved.
     """
     start_time = pd.Timestamp(start_time)
 
@@ -254,7 +334,7 @@ def build_empty_iaga_window(
 
     file = pd.DataFrame({"Date_UTC": times})
 
-    # empty magnetic channels
+    # Format missing channels through the same writer helpers as real data.
     for col in ["Bx", "By", "Bz", "TFG"]:
         file[col] = np.nan
 
@@ -330,6 +410,7 @@ def build_empty_iaga_window(
     site_code=str,
     path_prefix=str,
     file_format=str,
+    kwargs=dict,
 )
 def _get_live(date, site_code, path_prefix='https://data.magie.ie/', file_format="iaga2002", **kwargs):
     """
@@ -347,11 +428,20 @@ def _get_live(date, site_code, path_prefix='https://data.magie.ie/', file_format
     file_format : {"iaga2002", "txt"}, optional
         ``"iaga2002"`` reads the persistent IAGA-2002 file. ``"txt"`` reads
         the legacy TXT file and returns converted IAGA-2002 text.
+    **kwargs : dict
+        Station header options forwarded to ``magie2iaga2002`` for TXT input.
 
     Returns
     -------
     tuple[str, str]
         IAGA-2002 file contents and filename.
+
+    Raises
+    ------
+    FileNotFoundError
+        No readable IAGA candidate or local TXT file exists for the day.
+    ValueError
+        The requested file format is unsupported.
 
     Examples
     --------
@@ -417,33 +507,46 @@ def _get_live(date, site_code, path_prefix='https://data.magie.ie/', file_format
     now_time=(pd.Timestamp, np.datetime64, str),
     site_code=str,
     path_prefix=str,
+    site_metadata=(dict, type(None)),
     file_format=str,
 )
 def live_k(now_time, site_code, path_prefix='https://data.magie.ie/', site_metadata=None, file_format="iaga2002"):
     """
-    Fetch the past 3 days of live data for ``site_code`` and return smoothed K.
+    Compute live K indices from recent magnetic data and future NaN padding.
 
     Parameters
     ----------
-    now_time : datetime-like
-        Reference time; data are fetched from ``now_time - 3 days`` onward.
+    now_time : str, pandas.Timestamp or numpy.datetime64
+        Reference time. Load UTC archive days from four days before its UTC
+        day through that day, inclusive. Naive inputs are treated as UTC.
     site_code : str
         Three-letter site code to download.
+    path_prefix : str, optional
+        HTTP archive root or local root containing ``YYYY/MM/DD/`` folders.
+    site_metadata : dict or None, optional
+        Metadata containing ``k9_threshold`` in nT and ``geodetic_longitude``
+        in degrees. Looked up from ``site_code`` when omitted.
     file_format : {"iaga2002", "txt"}, optional
         ``"iaga2002"`` reads existing persistent IAGA files. ``"txt"`` reads
         legacy TXT files, converts them, saves persistent IAGA files, then reads
         those IAGA files.
-    **kwargs :
-        Passed to ``provisional_k`` and ``smooth_kindex``.
 
     Returns
     -------
-    pandas.DataFrame
-        Smoothed K-index values covering the last two full days.
+    magpy.stream.DataStream
+        Three-hour K values in ``var1``, with negative results replaced by NaN.
+        The trim starts 45 hours after the requested window begins and ends
+        at midnight after ``now_time``. Header keys ``plot_k_xlim_start`` and
+        ``plot_k_xlim_end`` request the two preceding UTC days and current day.
+
+    Raises
+    ------
+    FileNotFoundError
+        No live data files are available in the requested window.
 
     Examples
     --------
-    >>> live_k(pd.Timestamp('2024-01-03'), 'dun')
+    >>> live_k(pd.Timestamp('2024-01-03'), 'dun')  # doctest: +SKIP
     """
     now_time = _as_utc_naive_timestamp(now_time)
     start_time = now_time.floor('1D')-pd.Timedelta(4, 'D')
@@ -502,6 +605,7 @@ def live_k(now_time, site_code, path_prefix='https://data.magie.ie/', site_metad
             f"No live data files found for site {site_code!r} between "
             f"{start_time.date()} and {(end_time - pd.Timedelta(days=1)).date()}"
         )
+    # Future NaNs give FMI its trailing window while retaining observed samples.
     data = join_streams(
         data,
         _empty_padding_stream(
@@ -510,6 +614,7 @@ def live_k(now_time, site_code, path_prefix='https://data.magie.ie/', site_metad
             sampling_step_seconds=padding_sampling_step_seconds,
         ),
     )
+    # MagPy filtering supplies the minute cadence expected by step_size=60.
     data= data.filter()
     if site_metadata is None:
         site_metadata= get_site_metadata(site_code)
@@ -541,7 +646,9 @@ def plot_k(K_data, logo_path=None, auto_xlim=True, colorbar=True, show_logo=Fals
         Path to the logo image to be displayed on the plot. When omitted, the
         packaged ``MagIE-logo.png`` asset is used if ``show_logo`` is true.
     auto_xlim : bool, default True
-        Whether to automatically set the x-axis limits.
+        Whether to set limits from finite, nonnegative K values (all timestamps
+        if none are valid). Paired ``plot_k_xlim_start``/``plot_k_xlim_end``
+        values in DataFrame attrs or stream headers override inferred limits.
     colorbar : bool, default True
         Whether to add the horizontal qualitative K-index color legend.
     show_logo : bool, default False
@@ -550,7 +657,8 @@ def plot_k(K_data, logo_path=None, auto_xlim=True, colorbar=True, show_logo=Fals
     Returns
     -------
     tuple
-        ``(fig, ax, cax)`` when ``colorbar`` is true, otherwise ``(fig, ax)``.
+        Matplotlib ``(Figure, Axes, Axes)`` when ``colorbar`` is true, otherwise
+        ``(Figure, Axes)``. The caller owns and closes the figure.
 
     Examples
     --------
@@ -567,7 +675,6 @@ def plot_k(K_data, logo_path=None, auto_xlim=True, colorbar=True, show_logo=Fals
         xlim_end = xlim_end or metadata.get("plot_k_xlim_end")
 
     K_data = K_data.copy()  # avoid mutating caller data
-    # K_data["K_index"] = K_data["K_index"].replace(0, 0.2)  # lift zeros for visibility
     fig= plt.figure(figsize=(900/96, 400/96))
     if colorbar:
         gs= fig.add_gridspec(2, 1, height_ratios=[1, .18], hspace=0.32)
@@ -618,7 +725,6 @@ def plot_k(K_data, logo_path=None, auto_xlim=True, colorbar=True, show_logo=Fals
     ax.grid(True, which='major', axis='y', linestyle='--', alpha=1, lw=1)
     if colorbar:
         cbar=fig.colorbar(plt.cm.ScalarMappable(norm=norm, cmap=K_cmap), cax=cax, orientation='horizontal',
-                    # ticks=[1, 3, 4.5, 5.5, 7, 9.0],
                     )
         cbar.ax.set_xticks([])
         cbar.outline.set_linewidth(0.8)
@@ -639,7 +745,7 @@ def plot_k(K_data, logo_path=None, auto_xlim=True, colorbar=True, show_logo=Fals
             )
 
     ax.xaxis.set_major_locator(
-        mdates.HourLocator(byhour=[11])  # noon
+        mdates.HourLocator(byhour=[11])  # Place date labels near the day's centre.
     )
 
     ax.xaxis.set_major_formatter(
@@ -650,11 +756,10 @@ def plot_k(K_data, logo_path=None, auto_xlim=True, colorbar=True, show_logo=Fals
     ax.xaxis.set_minor_formatter(mdates.DateFormatter('%H:%M'))
     ax.tick_params(axis='x', which='major', labelrotation=0, pad=15)
     ax.tick_params(axis='x', which='minor', labelrotation=0, pad=2)
-    # ax.minorticks_on(axis='x')
-    # ax.spines[['top', 'right']].set_visible(False)
     k_times = np.array(K_data['time'])
     k_values = np.asarray(K_data['var1'], dtype=float)
     valid_k = np.isfinite(k_values) & (k_values >= 0)
+    # Ignore invalid leading bins; the 90-minute offset selects each bin's day.
     xlim_times = k_times[valid_k] if valid_k.any() else k_times
     k_days = (xlim_times.astype('datetime64[ns]') + np.timedelta64(90, 'm')).astype('datetime64[D]')
     xmin = k_days.min()
@@ -683,7 +788,7 @@ def plot_k(K_data, logo_path=None, auto_xlim=True, colorbar=True, show_logo=Fals
         imagebox = OffsetImage(logo, zoom=0.3)
         ab = AnnotationBbox(
             imagebox,
-            (0.78, 0.6),            # bottom-right in figure coords
+            (0.78, 0.6),            # Anchor in figure coordinates.
             xycoords="figure fraction",
             frameon=False,
             box_alignment=(1, 0),
@@ -696,7 +801,22 @@ def plot_k(K_data, logo_path=None, auto_xlim=True, colorbar=True, show_logo=Fals
 
 @enforce_types(data=DataStream, column=str)
 def _datastream_column_to_array(data, column):
-    """Return a datastream column as a NumPy array, or ``None`` when unavailable."""
+    """
+    Read a stream column without failing on unavailable MagPy channels.
+
+    Parameters
+    ----------
+    data : magpy.stream.DataStream
+        Stream to inspect.
+    column : str
+        MagPy channel name, such as ``time`` or ``x``.
+
+    Returns
+    -------
+    numpy.ndarray or None
+        Nonempty column array, or ``None`` if lookup/conversion fails, the
+        column is absent, or it has no samples.
+    """
     try:
         values = data[column]
     except Exception:
@@ -718,7 +838,7 @@ def _datastream_column_to_array(data, column):
 @enforce_types(data=DataStream, site_code=str, time=(str, pd.Timestamp, np.datetime64))
 def _require_valid_k_window(data, site_code, time):
     """
-    Validate that a datastream contains enough data to compute daily K values.
+    Check timestamp coverage and the presence of target-day magnetic data.
 
     Parameters
     ----------
@@ -729,11 +849,21 @@ def _require_valid_k_window(data, site_code, time):
     time : str or pandas.Timestamp or numpy.datetime64
         Target day to validate.
 
+    Returns
+    -------
+    None
+        Returns normally when the checks pass.
+
     Raises
     ------
     ValueError
-        If the datastream is missing timestamps, lacks three days of coverage,
+        If the datastream is missing timestamps, spans fewer than three UTC days,
         or has no valid magnetic data for the target day.
+
+    Notes
+    -----
+    This checks distinct days and at least one finite target-day component
+    sample; it does not establish continuous or complete daily coverage.
     """
     day = _utc_day(time)
 
@@ -803,21 +933,30 @@ def daily_K(
     site_code : str
         Site identifier used in archive filenames and metadata lookup.
     archive_path_builder : collections.abc.Callable, optional
-        Function that builds an archive directory from ``[YYYY, MM, DD]`` tokens.
+        Function mapping ``[YYYY, MM, DD]`` string tokens to an archive
+        directory string ending with a separator.
     site_metadata : dict or None, optional
         Pre-resolved site metadata. When omitted it is looked up from ``site_code``.
 
     Returns
     -------
-    object
-        MagPy datastream trimmed to the requested day with computed K values.
+    magpy.stream.DataStream
+        Requested UTC day's K values in ``var1``; negative results become NaN.
 
     Raises
     ------
     FileNotFoundError
         If the archive does not contain enough daily files.
     ValueError
-        If the datastream cannot produce valid K values for the requested day.
+        If window validation fails, MagPy emits diagnostic output, or the
+        trimmed result is empty.
+
+    Notes
+    -----
+    Loads available archive files from two UTC days before the target through
+    two days after it (three days after it for a non-midnight reference time).
+    At least three files and three distinct days are required. The callback
+    must return a string directory path ending with a separator.
     """
     timestamp = _as_utc_naive_timestamp(time)
     day = timestamp.floor("1D")
@@ -854,6 +993,8 @@ def daily_K(
     if site_metadata is None:
         site_metadata = get_site_metadata(site_code)
 
+    # MagPy can report failures via output instead of raising an exception.
+    # Promote diagnostics to errors so archive jobs log the affected day.
     k_fmi_stdout = StringIO()
     k_fmi_stderr = StringIO()
     with redirect_stdout(k_fmi_stdout), redirect_stderr(k_fmi_stderr):
@@ -894,7 +1035,26 @@ def daily_K(
     date=(str, pd.Timestamp, np.datetime64),
 )
 def _build_daily_k_error_record(exc, site_code, date):
-    """Build a structured error record including the traceback origin."""
+    """
+    Build a log record from an exception, station code and UTC archive day.
+
+    Parameters
+    ----------
+    exc : BaseException
+        Failure to describe; an absent traceback leaves origin fields empty.
+    site_code : str
+        Station identifier associated with the failure.
+    date : str, pandas.Timestamp or numpy.datetime64
+        Failed archive day.
+
+    Returns
+    -------
+    dict
+        UTC ``timestamp``, ``site``, ``date``, ``error_type``, ``message``,
+        ``error_file``, ``error_line`` and ``error_function`` fields.
+        ``error_line`` is an integer when a traceback is available, otherwise
+        an empty string. The message also includes the innermost frame origin.
+    """
     date = _utc_day(date)
     frames = traceback.extract_tb(exc.__traceback__)
     origin = frames[-1] if frames else None
@@ -921,7 +1081,21 @@ def _build_daily_k_error_record(exc, site_code, date):
 
 @enforce_types(error_log_path=(str, Path), errors=list)
 def _append_daily_k_errors(error_log_path, errors):
-    """Append captured daily K processing errors to a tab-delimited log file."""
+    """
+    Append captured daily K errors to a UTF-8 tab-delimited log.
+
+    Parameters
+    ----------
+    error_log_path : str or pathlib.Path
+        Destination file; missing parent directories are created.
+    errors : list
+        Records returned by ``_build_daily_k_error_record``.
+
+    Returns
+    -------
+    None
+        Writes one line per record without a header.
+    """
     error_log = Path(error_log_path)
     error_log.parent.mkdir(parents=True, exist_ok=True)
     with error_log.open("a", encoding="utf-8") as log_file:
@@ -931,9 +1105,23 @@ def _append_daily_k_errors(error_log_path, errors):
             )
 
 
-@enforce_types(output_file=(str, Path))
+@enforce_types(kvals=(DataStream, pd.DataFrame), output_file=(str, Path))
 def _save_daily_k_csv(kvals, output_file):
-    """Write computed K values to a CSV file with ``time`` and ``K_index`` columns."""
+    """
+    Save K values as a CSV with ``time`` and ``K_index`` columns.
+
+    Parameters
+    ----------
+    kvals : magpy.stream.DataStream or pandas.DataFrame
+        Computed indices in ``var1`` with corresponding ``time`` values.
+    output_file : str or pathlib.Path
+        Destination CSV, overwritten if present. Its parent must exist.
+
+    Returns
+    -------
+    None
+        Writes the CSV without a row index.
+    """
     df = pd.DataFrame(
         {
             "time": pd.to_datetime(kvals["time"]),
@@ -957,7 +1145,28 @@ def _run_daily_k_for_date(
     output_path_builder,
     site_metadata,
 ):
-    """Run daily K generation for one day and save the resulting CSV file."""
+    """
+    Compute one day's K values and save them to a station CSV.
+
+    Parameters
+    ----------
+    date : str, pandas.Timestamp or numpy.datetime64
+        UTC archive day to compute.
+    site_code : str
+        Station identifier used in the ``{site_code}YYYYMMDD.csv`` filename.
+    archive_path_builder : collections.abc.Callable
+        Map ``[YYYY, MM, DD]`` strings to a source directory with a trailing
+        separator, as required by ``daily_K``.
+    output_path_builder : collections.abc.Callable
+        Map the same date tokens to the output directory, created if missing.
+    site_metadata : dict or None
+        Metadata passed to ``daily_K``; ``None`` requests station lookup.
+
+    Returns
+    -------
+    pathlib.Path
+        Saved CSV path. Calculation and write failures propagate to the caller.
+    """
     kvals = daily_K(
         time=date,
         site_code=site_code,
@@ -987,7 +1196,29 @@ def _run_daily_k_for_date_with_error_capture(
     output_path_builder,
     site_metadata,
 ):
-    """Run daily K generation for one day and return either an output path or a structured error."""
+    """
+    Run a daily CSV job, capturing failures for the archive coordinator.
+
+    Parameters
+    ----------
+    date : str, pandas.Timestamp or numpy.datetime64
+        Day normalized to UTC midnight before running the job.
+    site_code : str
+        Station identifier used in filenames and error records.
+    archive_path_builder, output_path_builder : collections.abc.Callable
+        Directory callbacks accepting ``[YYYY, MM, DD]`` string tokens, as
+        described by ``_run_daily_k_for_date``.
+    site_metadata : dict or None
+        Station metadata forwarded to the calculation.
+
+    Returns
+    -------
+    dict
+        ``date`` is a pandas.Timestamp. ``output_file`` is a pathlib.Path on
+        success, otherwise ``None``. ``error`` is ``None`` on success, otherwise
+        a record from ``_build_daily_k_error_record``. Date normalization errors
+        occur before capture and propagate to the caller.
+    """
     date = _utc_day(date)
     try:
         output_file = _run_daily_k_for_date(
@@ -1042,24 +1273,28 @@ def daily_K_full_archive(
     site_code : str
         Site identifier used for archive lookup and output filenames.
     archive_path_builder : collections.abc.Callable, optional
-        Function that builds an archive directory from ``[YYYY, MM, DD]`` tokens.
+        Function mapping ``[YYYY, MM, DD]`` string tokens to an archive
+        directory string ending with a separator.
     output_path_builder : collections.abc.Callable, optional
         Function that builds an output directory from ``[YYYY, MM, DD]`` tokens.
     start : str or pandas.Timestamp or numpy.datetime64, optional
-        Inclusive start date.
+        Inclusive UTC start day; any time of day is discarded.
     end : str or pandas.Timestamp or numpy.datetime64, optional
-        Exclusive end date.
+        Exclusive UTC end day; any time of day is discarded.
     site_metadata : dict or None, optional
         Pre-resolved site metadata. When omitted it is looked up from ``site_code``.
     max_workers : int or None, optional
-        Number of parallel workers. ``None`` picks a bounded default.
+        Number of process workers, clamped to one through the number of days.
+        ``None`` uses at most 32 workers, bounded by CPU count and day count.
     error_log_path : str or pathlib.Path or None, optional
         File that receives one line per failed day. ``None`` disables logging.
 
     Returns
     -------
     tuple[list, list]
-        Successful outputs as ``(date, output_file)`` pairs and captured errors.
+        Successful ``(pandas.Timestamp, pathlib.Path)`` pairs and error records
+        from ``_build_daily_k_error_record``, each sorted by date. Failed days
+        are recorded while processing continues for the remaining days.
 
     Raises
     ------
@@ -1090,6 +1325,7 @@ def daily_K_full_archive(
     results = []
     errors = []
 
+    # Keep log writes in the coordinator so workers cannot interleave records.
     if max_workers == 1:
         for date in dates:
             try:
@@ -1139,6 +1375,19 @@ def daily_K_full_archive(
     errors.sort(key=lambda item: item["date"])
 
     return results, errors
+
+
+@enforce_types(
+    site_code=str,
+    archive_path_builder=Callable,
+    output_path_builder=Callable,
+    start=(str, pd.Timestamp, np.datetime64),
+    end=(str, pd.Timestamp, np.datetime64),
+    site_metadata=(dict, type(None)),
+    max_workers=(int, type(None)),
+    error_log_path=(str, Path, type(None)),
+    logo_path=(str, Path, type(None)),
+)
 def daily_K_plots_full_archive(
     site_code,
     archive_path_builder=lambda date: "./magnetometer_archive/{}/{}/{}/k_index/".format(
@@ -1155,36 +1404,49 @@ def daily_K_plots_full_archive(
     logo_path=None,
 ):
     """
-    Save daily K plots for every day in a date range.
+    Save rolling three-day K plots for every UTC day in a date range.
 
     Parameters
     ----------
     site_code : str
         Site identifier used for archive lookup and output filenames.
     archive_path_builder : collections.abc.Callable, optional
-        Function that builds an archive directory from ``[YYYY, MM, DD]`` tokens.
+        Map ``[YYYY, MM, DD]`` string tokens to directories containing
+        ``{site_code}YYYYMMDD.csv`` files with ``time`` and ``K_index`` columns.
     output_path_builder : collections.abc.Callable, optional
         Function that builds an output directory from ``[YYYY, MM, DD]`` tokens.
     start : str or pandas.Timestamp or numpy.datetime64, optional
-        Inclusive start date.
+        Inclusive UTC start day; any time of day is discarded.
     end : str or pandas.Timestamp or numpy.datetime64, optional
-        Exclusive end date.
+        Exclusive UTC end day; any time of day is discarded.
     site_metadata : dict or None, optional
-        Pre-resolved site metadata. When omitted it is looked up from ``site_code``.
+        Retained for API compatibility. Plot titles currently use a fresh
+        metadata lookup from ``site_code`` for each day.
     max_workers : int or None, optional
-        Number of parallel workers. ``None`` picks a bounded default.
+        Number of process workers, clamped to one through the number of days.
+        ``None`` uses at most 32 workers, bounded by CPU count and day count.
     error_log_path : str or pathlib.Path or None, optional
         File that receives one line per failed day. ``None`` disables logging.
+    logo_path : str, pathlib.Path or None, optional
+        Retained for API compatibility; archive plots currently omit the logo.
 
     Returns
     -------
     tuple[list, list]
-        Successful outputs as ``(date, output_file)`` pairs and captured errors.
+        Successful ``(pandas.Timestamp, pathlib.Path)`` pairs and error records
+        from ``_build_daily_k_error_record``, each sorted by date. Failed days
+        are recorded while processing continues for the remaining days.
 
     Raises
     ------
     ValueError
         If ``end`` is not later than ``start``.
+
+    Notes
+    -----
+    Reads available CSVs from the target day and three preceding days, and
+    displays the two preceding days through midnight after the target day.
+    PNGs are saved at 300 DPI and figures are closed after a successful save.
     """
     start = _utc_day(start)
     end = _utc_day(end)
@@ -1210,8 +1472,16 @@ def daily_K_plots_full_archive(
     results = []
     errors = []
 
+    @enforce_types(date=pd.Timestamp)
     def process_date(date):
+        """Save one day's PNG and return its date, output path and error record.
+
+        ``date`` is a UTC-midnight pandas.Timestamp supplied by the coordinator.
+        Returns a dict with ``date``, ``output_file`` (Path or None) and
+        ``error`` (dict or None), capturing read, render and write failures.
+        """
         try:
+            # Include the preceding CSV because bins can straddle UTC midnight.
             files = [os.path.join(archive_path_builder(date_.strftime("%Y-%m-%d").split("-")), f"{site_code}{date_:%Y%m%d}.csv") for date_ in [date - pd.Timedelta(days=3), date - pd.Timedelta(days=2), date - pd.Timedelta(days=1), date]]
             files = [file for file in files if os.path.isfile(file)]
             if not len(files):
