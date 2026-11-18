@@ -259,9 +259,21 @@ SITE_METADATA = {
     },
 }
 
+# The LEMI is a separate instrument at approximately the Dunsink location.
+# Keep its archive identity distinct while retaining the three-letter IAGA code.
+SITE_METADATA["dunsink lemi"] = {
+    **SITE_METADATA["dunsink"],
+    "station_name": "Dunsink LEMI",
+    "site_code": "dun_lemi",
+}
+
 SITE_ALIASES = {
     "dun": "dunsink",
     "dunsink": "dunsink",
+    "dun_lemi": "dunsink lemi",
+    "dunsink_lemi": "dunsink lemi",
+    "dunsink lemi": "dunsink lemi",
+    "dunsink-lemi": "dunsink lemi",
     "dun_eziemag": "dunsink EZIE Mag",
     "dunsink_eziemag": "dunsink EZIE Mag",
     "flo": "florence court",
@@ -349,6 +361,10 @@ def normalise_site_name(site):
     label = str(site).strip().lower()
     if not label:
         return None
+
+    # Resolve explicit instrument aliases before stripping derived suffixes.
+    if label in SITE_ALIASES:
+        return SITE_ALIASES[label]
 
     for separator in ("_", "-", " "):
         label = label.split(separator, 1)[0]
