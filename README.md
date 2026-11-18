@@ -8,17 +8,17 @@ conda create -n magie python=3.12 # important to not use later python versions i
 
 conda activate magie
 
-pip install "git+https://github.com/magie-network/MAGIE.git@3.3.5"
+pip install "git+https://github.com/magie-network/MAGIE.git@3.4.0"
 
 For alert support with `pip`, install the `alerts` extra:
 
-pip install "magie[alerts] @ git+https://github.com/magie-network/MAGIE.git@3.3.5"
+pip install "magie[alerts] @ git+https://github.com/magie-network/MAGIE.git@3.4.0"
 
 This will install mastodon for mastodon alerts
 
 For magnetometer monitor map support with `pip`, install the `monitor` extra:
 
-pip install "magie[monitor] @ git+https://github.com/magie-network/MAGIE.git@3.3.5"
+pip install "magie[monitor] @ git+https://github.com/magie-network/MAGIE.git@3.4.0"
 
 This will install Plotly and secsy for the magnetometer status map tools.
 
@@ -64,3 +64,8 @@ FLO is set up and operated by BGS. For more information, visit [SAGE variometer 
 - 
 
 # [To do list](todo.md)
+
+
+## Contributing
+
+For future package changes, follow [Package standards](PACKAGE_STANDARDS.md).
