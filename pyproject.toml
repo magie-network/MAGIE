@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "magie"                       # pip name; usually lower-case
-version = "3.5.0"
+version = "3.5.1"
 description = "MagIE Operational Package and Complimentary Code."
 readme = "README.md"
 requires-python = ">=3.10,<3.13"
@@ -41,6 +41,9 @@ monitor = [
   "plotly>=5.24.0",
   "secsy @ git+https://github.com/klaundal/secsy.git",
 ]
+[project.scripts]
+magie-live = "magie.live_magpy_display:main"
+
 [project.urls]
 homepage = "https://github.com/magie-network/MAGIE"
 repository = "https://github.com/magie-network/MAGIE"
@@ -53,5 +56,5 @@ where = ["src"]
 
 [tool.setuptools.package-data]
 magie = ["*.json"]
-"magie.assets" = ["*.png", "*.jpg", "email_templates/*.html"]
+"magie.assets" = ["*.png", "*.jpg", "email_templates/*.html", "live_dashboard/*.html", "live_dashboard/*.png"]
 "magie.assets.logos" = ["*.png", "*.jpg"]

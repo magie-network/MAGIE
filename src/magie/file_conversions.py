@@ -1,7 +1,9 @@
 import pandas as pd
 import numpy as np
 from pathlib import Path
+from os import PathLike
 from collections.abc import Callable
+from magpy.stream import DataStream
 from magie.utils import enforce_types, get_site_metadata, tqdm_joblib
 
 
@@ -285,6 +287,80 @@ def magie2magie_legacy(file):
     file[';Date & Time'] = file[';Date & Time'].dt.strftime('%d/%m/%Y %H:%M:%S')
     # columns= [';Date & Time', 'Index#', 'Bx', 'By', 'Bz']
     return file[columns], filename
+
+
+@enforce_types(data=DataStream, output_path=(str, PathLike))
+def write_magie_legacy_datastream(data, output_path):
+    """
+    Write a daily XYZ DataStream in the legacy baseline-adder text format.
+
+    Parameters
+    ----------
+    data : magpy.stream.DataStream
+        Nonempty XYZ, XYZF or XYZS stream with aligned time/x/y/z columns.
+        Times must lie within one UTC day at whole-second precision; naive
+        timestamps are interpreted as UTC. XYZ measurements must be in nT.
+    output_path : str or os.PathLike
+        Destination text filename, e.g. 'val20261028.txt' or
+        'val_mag_realtime.txt'. Parent directories are created as needed and
+        an existing file is overwritten.
+
+    Returns
+    -------
+    pathlib.Path
+        Written destination.
+
+    Raises
+    ------
+    TypeError
+        An argument does not match the documented type.
+    ValueError
+        Component metadata is not XYZ, timestamps are empty, invalid, span
+        several UTC days or contain fractional seconds, or an XYZ column
+        does not match the time axis.
+    OSError
+        The destination directory or file cannot be created or written.
+
+    Notes
+    -----
+    Reproduces val_baseline_adder.py's tab-delimited header
+    ``;Date & Time, Index#, Bx, By, Bz``, day-first timestamps, zero-based
+    index and two-decimal XYZ formatting. F is omitted. Nonfinite XYZ values
+    are written as 99999.99, matching the package's legacy missing marker.
+    Row order and gaps are preserved; no baseline, coordinate conversion,
+    resampling or input mutation is performed. Rounding affects only the
+    text output, so full-precision XYZ and derived F remain in the stream.
+
+    Examples
+    --------
+    >>> path = write_magie_legacy_datastream(corrected, 'val20261028.txt')  # doctest: +SKIP
+    """
+    if data.header.get("DataComponents", "").upper() not in {"XYZ", "XYZF", "XYZS"}:
+        raise ValueError("DataComponents must identify XYZ measurements in nT")
+    times = pd.to_datetime(data["time"], utc=True)
+    if not len(times) or times.isna().any():
+        raise ValueError("data must contain nonempty, valid UTC timestamps")
+    if len(times.normalize().unique()) != 1:
+        raise ValueError("Export exactly one UTC day per legacy text file")
+    if (times != times.floor("s")).any():
+        raise ValueError("Legacy timestamps require whole-second precision")
+
+    # Validate before opening an existing output file and keep caller data intact.
+    columns = []
+    for key in ("x", "y", "z"):
+        values = np.asarray(data[key], dtype=float)
+        if values.shape != (len(times),):
+            raise ValueError("x, y and z must share the DataStream time axis")
+        columns.append(np.where(np.isfinite(values), values, 99999.99))
+
+    output_path = Path(output_path)
+    output_path.parent.mkdir(parents=True, exist_ok=True)
+    with output_path.open("w", encoding="utf-8", newline="\n") as destination:
+        destination.write(";Date & Time\tIndex#\tBx\tBy\tBz\n")
+        for index, (stamp, x, y, z) in enumerate(zip(
+                times.strftime("%d/%m/%Y %H:%M:%S"), *columns)):
+            destination.write(f"{stamp}\t{index}\t{x:.2f}\t{y:.2f}\t{z:.2f}\n")
+    return output_path
 
 
 @enforce_types(
